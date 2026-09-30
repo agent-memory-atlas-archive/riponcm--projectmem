@@ -115,3 +115,44 @@ def test_project_purpose_falls_back_when_project_map_is_placeholder(tmp_path, mo
     # Should remain placeholder — neither file has real Project purpose yet
     assert "Replace this placeholder" in summary
     assert "first note" in summary
+
+
+def _issue_events(count: int):
+    """N synthetic issue events with ids 0001..count."""
+    from projectmem.models import Event
+
+    return [Event(type="issue", summary=f"issue {i:04d}", issue_id=f"{i:04d}") for i in range(1, count + 1)]
+
+
+def _recent_issue_lines(summary: str) -> list[str]:
+    section = summary.split("## Recent issues")[1].split("## Decisions")[0]
+    return [line for line in section.splitlines() if line.startswith("- [")]
+
+
+def test_recent_issues_capped_at_ten(tmp_path):
+    """Issue #19: Recent issues listed every issue ever logged (22 in the
+    reporter's project), while Notes is capped at the latest 10. Cap Recent
+    issues at the 10 most recent so the summary stays a scannable snapshot."""
+    from projectmem.summary import build_summary
+
+    summary = build_summary(_issue_events(12), tmp_path)
+    lines = _recent_issue_lines(summary)
+
+    assert len(lines) == 10
+    # The 10 most recent issues (highest ids) are kept...
+    assert "#0012" in lines[0]
+    assert "#0003" in lines[-1]
+    # ...and the two oldest fall out.
+    assert "#0001" not in summary
+    assert "#0002" not in summary
+
+
+def test_recent_issues_under_ten_all_listed(tmp_path):
+    from projectmem.summary import build_summary
+
+    summary = build_summary(_issue_events(3), tmp_path)
+    lines = _recent_issue_lines(summary)
+
+    assert len(lines) == 3
+    assert "#0003" in lines[0]
+    assert "#0001" in lines[-1]
