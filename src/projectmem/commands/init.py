@@ -9,7 +9,11 @@ from pathlib import Path
 import typer
 
 from projectmem.glyphs import ARROW, RULE_DOUBLE, WARN
-from projectmem.storage import initialize
+from projectmem.storage import (
+    initialize,
+    refresh_ai_instructions,
+    splice_global_memory_block,
+)
 
 
 def run(
@@ -27,6 +31,15 @@ def run(
 ) -> None:
     path = initialize(root)
     typer.echo(f"Initialized {path}")
+
+    # initialize() leaves an existing AI_INSTRUCTIONS.md alone, so a project
+    # made by an older release would keep that release's guidance for good.
+    # Refresh it here — and only here — so no other command rewrites it.
+    if refresh_ai_instructions(root):
+        typer.echo(
+            "  Refreshed .projectmem/AI_INSTRUCTIONS.md to the current guidance "
+            "(previous copy saved as AI_INSTRUCTIONS.md.bak)."
+        )
 
     root_path = root or Path.cwd()
 
@@ -316,27 +329,7 @@ def _inherit_global_memory(root: Path, filter_tags: str | None = None) -> None:
     if ai_path.exists():
         content = ai_path.read_text(encoding="utf-8")
 
-        # Remove old inherited section if present
-        marker_start = "## Global Memory — Inherited Knowledge"
-        if marker_start in content:
-            # Find start and end of section
-            start_idx = content.index(marker_start)
-            # Find next ## heading or end of file
-            rest = content[start_idx + len(marker_start):]
-            next_heading = rest.find("\n## ")
-            if next_heading >= 0:
-                end_idx = start_idx + len(marker_start) + next_heading
-            else:
-                end_idx = len(content)
-            content = content[:start_idx].rstrip("\n") + "\n\n" + content[end_idx:].lstrip("\n")
-
-        # Append the new section before the Rules section if it exists
-        rules_marker = "## Rules"
-        if rules_marker in content:
-            idx = content.index(rules_marker)
-            content = content[:idx] + instructions_section + "\n" + content[idx:]
-        else:
-            content = content.rstrip("\n") + "\n\n" + instructions_section
+        content = splice_global_memory_block(content, instructions_section)
 
         ai_path.write_text(content, encoding="utf-8")
 

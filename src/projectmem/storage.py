@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,15 @@ ISSUES_DIR = "issues"
 AI_INSTRUCTIONS_FILE = "AI_INSTRUCTIONS.md"
 PROJECT_MAP_FILE = "PROJECT_MAP.md"
 PLAN_FILE = "plan.md"
+
+# Bump when the generated AI_INSTRUCTIONS.md changes in a way an existing
+# project should pick up. `pjm init` rewrites a file whose marker is missing or
+# older than this (keeping a .bak); a file at this version is the user's and is
+# left alone. The marker is written into the template by ai_instructions().
+INSTRUCTIONS_VERSION = 1
+INSTRUCTIONS_BACKUP_FILE = AI_INSTRUCTIONS_FILE + ".bak"
+_INSTRUCTIONS_MARKER_RE = re.compile(r"<!--\s*projectmem-instructions:\s*(\d+)\s*-->")
+GLOBAL_MEMORY_HEADING = "## Global Memory — Inherited Knowledge"
 
 
 class ProjectMemError(RuntimeError):
@@ -125,6 +135,10 @@ def initialize(root: Path | None = None) -> Path:
     if not summary.exists():
         summary.write_text(initial_summary(root_path), encoding="utf-8")
 
+    # Written only when missing: initialize() must never rewrite a file the
+    # user may have edited. Refreshing a stale one is `pjm init`'s job
+    # (refresh_ai_instructions), so it never happens as a side effect of
+    # some other caller.
     instructions = project_dir / AI_INSTRUCTIONS_FILE
     if not instructions.exists():
         instructions.write_text(ai_instructions(), encoding="utf-8")
@@ -226,9 +240,85 @@ def initial_summary(root: Path) -> str:
     )
 
 
+def instructions_version(text: str) -> int:
+    """The marker version in an AI_INSTRUCTIONS.md, 0 if it has none."""
+    match = _INSTRUCTIONS_MARKER_RE.search(text)
+    return int(match.group(1)) if match else 0
+
+
+def _global_memory_span(content: str) -> tuple[int, int] | None:
+    """Where the `## Global Memory` section sits in `content`, if it does.
+
+    The section runs to the next `## ` heading (its own `### ` subheadings do
+    not end it) or the end of the file.
+    """
+    start = content.find(GLOBAL_MEMORY_HEADING)
+    if start < 0:
+        return None
+    body = start + len(GLOBAL_MEMORY_HEADING)
+    nxt = content[body:].find("\n## ")
+    return start, len(content) if nxt < 0 else body + nxt
+
+
+def extract_global_memory_block(content: str) -> str:
+    """The `## Global Memory` section of `content`, or "" if there is none."""
+    span = _global_memory_span(content)
+    return content[span[0]:span[1]].rstrip("\n") + "\n" if span else ""
+
+
+def splice_global_memory_block(content: str, block: str) -> str:
+    """`content` with its Global Memory section replaced by `block`.
+
+    Any existing section is dropped first; the new one goes before the
+    `## Rules` section if there is one, else at the end.
+    """
+    span = _global_memory_span(content)
+    if span:
+        content = content[:span[0]].rstrip("\n") + "\n\n" + content[span[1]:].lstrip("\n")
+    rules_marker = "## Rules"
+    if rules_marker in content:
+        idx = content.index(rules_marker)
+        return content[:idx] + block + "\n" + content[idx:]
+    return content.rstrip("\n") + "\n\n" + block
+
+
+def refresh_ai_instructions(root: Path | None = None) -> bool:
+    """Bring an existing AI_INSTRUCTIONS.md up to the current template.
+
+    initialize() writes the file only when it is missing, so a project created
+    by an older release kept that release's guidance forever — including call
+    shapes that have since been corrected. Called from `pjm init` only:
+
+    - marker at INSTRUCTIONS_VERSION: left untouched, user edits and all
+    - marker absent or older: the file is copied to AI_INSTRUCTIONS.md.bak and
+      rewritten from the template, carrying over its Global Memory section
+    - file missing: nothing to refresh (initialize() writes it)
+
+    Returns True when it rewrote the file.
+    """
+    root_path = root or Path.cwd()
+    path = mem_path(root_path) / AI_INSTRUCTIONS_FILE
+    if not path.exists():
+        return False
+    current = path.read_text(encoding="utf-8")
+    if instructions_version(current) >= INSTRUCTIONS_VERSION:
+        return False
+
+    backup = path.with_name(INSTRUCTIONS_BACKUP_FILE)
+    backup.write_text(current, encoding="utf-8")
+    fresh = ai_instructions()
+    block = extract_global_memory_block(current)
+    if block:
+        fresh = splice_global_memory_block(fresh, block)
+    path.write_text(fresh, encoding="utf-8")
+    ensure_gitignore_entry(root_path, extra=[f"{MEM_DIR}/{INSTRUCTIONS_BACKUP_FILE}"])
+    return True
+
+
 def ai_instructions() -> str:
     return (
         "# projectmem AI Instructions\n\n"
+        f"<!-- projectmem-instructions: {INSTRUCTIONS_VERSION} -->\n\n"
         "These instructions are MANDATORY for all AI coding agents working in this "
         "project. Failure to follow them means your work is incomplete and the audit "
         "trail is corrupted.\n\n"
@@ -488,7 +578,7 @@ def initial_plan(root: Path) -> str:
     )
 
 
-def ensure_gitignore_entry(root: Path) -> None:
+def ensure_gitignore_entry(root: Path, extra: list[str] | None = None) -> None:
     """Add projectmem's runtime + scratch files to .gitignore.
 
     Default policy: commit distilled team knowledge (summary.md, PROJECT_MAP.md,
@@ -501,6 +591,7 @@ def ensure_gitignore_entry(root: Path) -> None:
         f"{MEM_DIR}/watch.pid",
         f"{MEM_DIR}/watch.log",
         f"{MEM_DIR}/structure.json",
+        *(extra or []),
     ]
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
     existing_lines = existing.splitlines()

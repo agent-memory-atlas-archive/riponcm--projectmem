@@ -164,8 +164,11 @@ def test_hook_runs_under_stripped_path(tmp_path: Path, fake_pjm: Path) -> None:
     assert invocation.startswith("precheck"), f"unexpected args: {invocation!r}"
 
 
-def test_install_hooks_uses_resolved_path(tmp_path: Path) -> None:
+def test_install_hooks_uses_resolved_path(tmp_path: Path, monkeypatch) -> None:
     """Smoke: install_hooks writes a hook whose PJM_BIN is the resolved binary."""
+    # An empty prefix, so PATH is what answers: the interpreter-adjacent pjm
+    # takes precedence over it, and is exercised by its own tests below.
+    monkeypatch.setattr("sys.prefix", str(tmp_path / "no-venv"))
     hooks_dir = tmp_path / ".git" / "hooks"
     hooks_dir.mkdir(parents=True)
     install_hooks(hooks_dir)
@@ -181,3 +184,214 @@ def test_install_hooks_uses_resolved_path(tmp_path: Path) -> None:
     found = shutil.which("pjm") or shutil.which("projectmem")
     if found:
         assert baked == found, f"baked path {baked!r} != resolved {found!r}"
+
+
+# ── the pjm that is running is the pjm the hook should call ─────────────────
+#
+# `/some/venv/bin/pjm init` with that venv off PATH used to bake whatever
+# `pjm` PATH did find (an anaconda one, say), so commits were then captured by
+# a different install than the one that wrote the hook.
+
+def _fake_prefix(tmp_path: Path, exe: str, subdir: str) -> Path:
+    prefix = tmp_path / "venv"
+    (prefix / subdir).mkdir(parents=True)
+    binary = prefix / subdir / exe
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    return binary
+
+
+def test_resolver_prefers_the_pjm_next_to_the_interpreter(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm", "bin")
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: f"/opt/anaconda3/bin/{name}")
+
+    assert _resolve_pjm_binary() == binary.as_posix()
+
+
+def test_resolver_falls_back_to_path_without_an_adjacent_pjm(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: "/usr/local/bin/pjm" if name == "pjm" else None)
+
+    assert _resolve_pjm_binary() == "/usr/local/bin/pjm"
+
+
+def test_resolver_skips_an_adjacent_pjm_that_is_not_executable(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm", "bin")
+    binary.chmod(0o644)
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: "/usr/local/bin/pjm" if name == "pjm" else None)
+
+    assert _resolve_pjm_binary() == "/usr/local/bin/pjm"
+
+
+def test_resolver_finds_scripts_pjm_exe_on_windows(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm.exe", "Scripts")
+    monkeypatch.setattr(hooks, "_is_windows", lambda: True)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: r"C:\Anaconda3\Scripts\pjm.exe")
+
+    assert _resolve_pjm_binary() == binary.as_posix()
+    assert "\\" not in _resolve_pjm_binary()
+
+
+def test_resolver_with_nothing_found_is_the_bare_name(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    (tmp_path / "venv").mkdir()
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: None)
+
+    assert _resolve_pjm_binary() == "pjm"
+
+
+# ── a hook installed by an older release must pick up the current one ───────
+#
+# install_hooks() used to skip any hook that already had our marker, so the
+# baked path, the #!/bin/sh shebang and the forward-slash paths of 0.3.3 never
+# reached a project that had installed hooks earlier. The fixtures below are
+# the text 0.3.2 wrote, byte for byte, with the pjm of a different install
+# (anaconda) baked in.
+
+OLD_SHEBANG = "#!/usr/bin/env bash\n"
+OLD_POST_COMMIT = (
+    '# >>> projectmem auto-capture >>>\n'
+    '# Automatically captures development events into projectmem.\n'
+    '# Installed by: pjm hooks install (or pjm init)\n'
+    '# Remove with:  pjm hooks uninstall\n'
+    'PJM_BIN="/opt/anaconda3/bin/pjm"\n'
+    'if [ ! -x "$PJM_BIN" ]; then\n'
+    '    PJM_BIN="$(command -v pjm 2>/dev/null || command -v projectmem 2>/dev/null)"\n'
+    'fi\n'
+    'if [ -d ".projectmem" ] && [ -n "$PJM_BIN" ]; then\n'
+    '    "$PJM_BIN" _auto-capture "commit" >/dev/null 2>&1 &\n'
+    'fi\n'
+    '# <<< projectmem auto-capture <<<\n'
+)
+OLD_PRE_COMMIT = (
+    '# >>> projectmem auto-capture >>>\n'
+    '# Pre-commit warning check against project memory.\n'
+    '# Installed by: pjm hooks install (or pjm init)\n'
+    '# Remove with:  pjm hooks uninstall\n'
+    '# Bypass once:  git commit --no-verify\n'
+    'PJM_BIN="/opt/anaconda3/bin/pjm"\n'
+    'if [ ! -x "$PJM_BIN" ]; then\n'
+    '    PJM_BIN="$(command -v pjm 2>/dev/null || command -v projectmem 2>/dev/null)"\n'
+    'fi\n'
+    'if [ -d ".projectmem" ] && [ -n "$PJM_BIN" ]; then\n'
+    '    "$PJM_BIN" precheck --level warn || true\n'
+    'fi\n'
+    '# <<< projectmem auto-capture <<<\n'
+)
+
+
+def _venv_pjm(tmp_path: Path, monkeypatch) -> str:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm", "bin")
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    return binary.as_posix()
+
+
+def _hooks_dir(tmp_path: Path) -> Path:
+    hooks_dir = tmp_path / "repo" / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    return hooks_dir
+
+
+def test_a_hook_baked_by_an_old_release_gets_the_new_path_and_shebang(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from projectmem.commands.hooks import HOOK_SHEBANG
+
+    pjm = _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    (hooks_dir / "post-commit").write_text(OLD_SHEBANG + OLD_POST_COMMIT, encoding="utf-8")
+    (hooks_dir / "post-merge").write_text(
+        OLD_SHEBANG + OLD_POST_COMMIT.replace('"commit"', '"merge"'), encoding="utf-8"
+    )
+    (hooks_dir / "pre-commit").write_text(OLD_SHEBANG + OLD_PRE_COMMIT, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+
+    for name in ("post-commit", "post-merge", "pre-commit"):
+        text = (hooks_dir / name).read_text(encoding="utf-8")
+        assert text.startswith(HOOK_SHEBANG), f"{name} kept the old shebang"
+        assert f'PJM_BIN="{pjm}"' in text
+        assert "anaconda" not in text
+        assert text.count(HOOK_MARKER_START) == 1
+        assert os.access(hooks_dir / name, os.X_OK)
+    assert 'precheck --level warn' in (hooks_dir / "pre-commit").read_text(encoding="utf-8")
+    assert '_auto-capture "merge"' in (hooks_dir / "post-merge").read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert "projectmem git hooks refreshed: post-commit, post-merge, pre-commit" in out
+    assert "installed:" not in out
+
+
+def test_a_users_own_lines_and_shebang_survive_a_refresh_byte_for_byte(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pjm = _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    before = "#!/usr/bin/env bash\nset -e\necho 'lint first'\n\n"
+    after = "\n# then tests\npytest -q  \n\ttrailing\n"
+    (hooks_dir / "pre-commit").write_text(before + OLD_PRE_COMMIT + after, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+
+    text = (hooks_dir / "pre-commit").read_text(encoding="utf-8")
+    assert text.startswith(before), "the user's shebang or lines before the block changed"
+    assert text.endswith(after), "the user's lines after the block changed"
+    assert f'PJM_BIN="{pjm}"' in text
+    assert text.count(HOOK_MARKER_START) == 1
+
+
+def test_a_second_install_changes_nothing_and_says_so(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    (hooks_dir / "post-commit").write_text(OLD_SHEBANG + OLD_POST_COMMIT, encoding="utf-8")
+    (hooks_dir / "pre-commit").write_text("#!/bin/sh\necho mine\n" + OLD_PRE_COMMIT, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+    first = {p.name: p.read_bytes() for p in hooks_dir.iterdir()}
+    capsys.readouterr()
+    install_hooks(hooks_dir)
+
+    assert {p.name: p.read_bytes() for p in hooks_dir.iterdir()} == first
+    assert "projectmem git hooks already installed." in capsys.readouterr().out
+
+
+def test_a_block_with_no_end_marker_is_left_alone_with_a_warning(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    broken = (
+        OLD_SHEBANG + "echo mine\n"
+        + OLD_PRE_COMMIT.replace("# <<< projectmem auto-capture <<<\n", "")
+        + "echo also mine\n"
+    )
+    (hooks_dir / "pre-commit").write_text(broken, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+
+    assert (hooks_dir / "pre-commit").read_text(encoding="utf-8") == broken
+    captured = capsys.readouterr()
+    assert "pre-commit" in captured.err and "end marker" in captured.err
+    assert "already installed" not in captured.out

@@ -32,7 +32,7 @@ def test_hook_shebang_is_posix_sh_not_bash():
     assert hooks.HOOK_SHEBANG == "#!/bin/sh\n"
 
 
-def test_baked_binary_path_has_no_backslashes(monkeypatch):
+def test_baked_binary_path_has_no_backslashes(monkeypatch, tmp_path):
     """A Windows path in a shell string is eaten by escape processing.
 
     `C:\\Users\\ripon\\...` reaches the shell as `C:\\Usersipon\\...` — the -x
@@ -41,6 +41,9 @@ def test_baked_binary_path_has_no_backslashes(monkeypatch):
     """
     from projectmem.commands import hooks
 
+    # An empty prefix, so PATH is what answers: the interpreter-adjacent pjm
+    # (the venv this suite runs in) would otherwise win, correctly.
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: WIN_PJM)
     resolved = hooks._resolve_pjm_binary()
 
@@ -52,6 +55,7 @@ def test_baked_path_survives_a_real_shell(tmp_path, monkeypatch):
     """The end the user actually feels: what the hook reads back."""
     from projectmem.commands import hooks
 
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: WIN_PJM)
     script = tmp_path / "h.sh"
     script.write_text(f'PJM_BIN="{hooks._resolve_pjm_binary()}"\nprintf %s "$PJM_BIN"\n')

@@ -414,7 +414,7 @@ The architecture is built around one rule: **AI reads small, distilled files. To
 |---|---|---|
 | No projectmem (baseline) | 5,000 – 20,000+ | AI re-reads source files every session |
 | Universal Mode (markdown) | ~2,500 | AI reads 3 small distilled files once |
-| **MCP Mode** *(recommended)* | **~800 – 1,500** | AI calls `get_summary()`, then `get_issue(id)` only when relevant |
+| **MCP Mode** *(recommended)* | **~800 – 1,500** | AI calls `get_summary()`, then `get_issue(issue_id)` only when relevant |
 | `pjm wrap` (pre-injection) | 500 – 2,000 | Pre-generated, you set the budget |
 
 **AI never reads `events.jsonl` directly.** That file is for tools (`pjm score`, `pjm context`, `pjm wrap`). Tools distill the raw log into compact AI-readable summaries.
@@ -687,7 +687,7 @@ All 17 tools your AI can call. Every repo tool takes an optional
 | `get_project_map()` | Start — understand repo structure |
 | `get_plan()` | Read `plan.md` — the ideas + plans (intent), separate from the event log |
 | `precheck_file(file_path)` | Before editing any file — surface failure history |
-| `get_issue(id)` | Read one specific issue's full history by ID |
+| `get_issue(issue_id)` | Read one specific issue's full history by ID |
 | `search_events(query)` | Plain-text search across all logged events |
 | `get_context(tokens, focus)` | Token-budgeted memory block with optional focus filter |
 | `get_score()` | A+→F prevention score + ROI numbers |
