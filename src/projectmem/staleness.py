@@ -89,13 +89,29 @@ def is_memory_path(path: str, root: Path | None = None) -> bool:
     is_abs = posixpath.isabs(normalized) or bool(_WINDOWS_DRIVE.match(normalized))
     bases = [None] if is_abs else [root_posix, _cwd_posix()]
     for base in bases:
-        candidate = normalized if base is None else posixpath.join(base, normalized)
-        try:
-            rel = Path(posixpath.normpath(candidate)).relative_to(root_posix)
-        except ValueError:
-            continue  # outside the project from this anchor
-        return bool(rel.parts) and rel.parts[0] == MEM_DIR
+        candidate = posixpath.normpath(
+            normalized if base is None else posixpath.join(base, normalized)
+        )
+        # The root is resolved, so resolve an absolute candidate too: on macOS
+        # `/tmp/proj/.projectmem/x` is `/private/tmp/proj/...` once resolved,
+        # and any project reached through a symlinked folder has the same gap.
+        spellings = [candidate]
+        if base is None:
+            spellings.append(_resolved_posix(candidate))
+        for spelling in spellings:
+            try:
+                rel = Path(spelling).relative_to(root_posix)
+            except ValueError:
+                continue  # outside the project from this anchor
+            return bool(rel.parts) and rel.parts[0] == MEM_DIR
     return False
+
+
+def _resolved_posix(path: str) -> str:
+    try:
+        return Path(path).resolve().as_posix()
+    except (OSError, RuntimeError):  # unreadable, or a symlink loop
+        return path
 
 
 def _cwd_posix() -> str:

@@ -240,3 +240,17 @@ def test_a_manual_decision_in_the_same_spot_is_still_flagged(worked_on_repo):
 
     flagged = find_stale_events([manual], worked_on_repo)
     assert [(x["event"].id, x["commits_since"]) for x in flagged] == [("human", 3)]
+
+
+def test_an_absolute_path_through_a_symlinked_folder_is_still_ours(tmp_path):
+    """The root is resolved; the client's absolute path may not be. On macOS
+    /tmp is a symlink to /private/tmp, so the two spellings never matched and
+    precheck_file called a memory file safe to modify."""
+    real = tmp_path / "real"
+    (real / ".projectmem").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    assert is_memory_path(str(link / ".projectmem" / "summary.md"), real)
+    assert is_memory_path(str(real / ".projectmem" / "summary.md"), link)
+    assert not is_memory_path(str(link / "src" / "app.py"), real)
