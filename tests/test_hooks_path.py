@@ -164,8 +164,11 @@ def test_hook_runs_under_stripped_path(tmp_path: Path, fake_pjm: Path) -> None:
     assert invocation.startswith("precheck"), f"unexpected args: {invocation!r}"
 
 
-def test_install_hooks_uses_resolved_path(tmp_path: Path) -> None:
+def test_install_hooks_uses_resolved_path(tmp_path: Path, monkeypatch) -> None:
     """Smoke: install_hooks writes a hook whose PJM_BIN is the resolved binary."""
+    # An empty prefix, so PATH is what answers: the interpreter-adjacent pjm
+    # takes precedence over it, and is exercised by its own tests below.
+    monkeypatch.setattr("sys.prefix", str(tmp_path / "no-venv"))
     hooks_dir = tmp_path / ".git" / "hooks"
     hooks_dir.mkdir(parents=True)
     install_hooks(hooks_dir)
@@ -181,3 +184,75 @@ def test_install_hooks_uses_resolved_path(tmp_path: Path) -> None:
     found = shutil.which("pjm") or shutil.which("projectmem")
     if found:
         assert baked == found, f"baked path {baked!r} != resolved {found!r}"
+
+
+# ── the pjm that is running is the pjm the hook should call ─────────────────
+#
+# `/some/venv/bin/pjm init` with that venv off PATH used to bake whatever
+# `pjm` PATH did find (an anaconda one, say), so commits were then captured by
+# a different install than the one that wrote the hook.
+
+def _fake_prefix(tmp_path: Path, exe: str, subdir: str) -> Path:
+    prefix = tmp_path / "venv"
+    (prefix / subdir).mkdir(parents=True)
+    binary = prefix / subdir / exe
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    return binary
+
+
+def test_resolver_prefers_the_pjm_next_to_the_interpreter(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm", "bin")
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: f"/opt/anaconda3/bin/{name}")
+
+    assert _resolve_pjm_binary() == binary.as_posix()
+
+
+def test_resolver_falls_back_to_path_without_an_adjacent_pjm(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: "/usr/local/bin/pjm" if name == "pjm" else None)
+
+    assert _resolve_pjm_binary() == "/usr/local/bin/pjm"
+
+
+def test_resolver_skips_an_adjacent_pjm_that_is_not_executable(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm", "bin")
+    binary.chmod(0o644)
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: "/usr/local/bin/pjm" if name == "pjm" else None)
+
+    assert _resolve_pjm_binary() == "/usr/local/bin/pjm"
+
+
+def test_resolver_finds_scripts_pjm_exe_on_windows(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm.exe", "Scripts")
+    monkeypatch.setattr(hooks, "_is_windows", lambda: True)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: r"C:\Anaconda3\Scripts\pjm.exe")
+
+    assert _resolve_pjm_binary() == binary.as_posix()
+    assert "\\" not in _resolve_pjm_binary()
+
+
+def test_resolver_with_nothing_found_is_the_bare_name(tmp_path, monkeypatch) -> None:
+    import projectmem.commands.hooks as hooks
+
+    (tmp_path / "venv").mkdir()
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(hooks.shutil, "which", lambda name: None)
+
+    assert _resolve_pjm_binary() == "pjm"

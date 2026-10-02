@@ -46,33 +46,39 @@ def _shell_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _resolve_pjm_binary() -> str:
     """Find an absolute path to a working pjm-equivalent CLI.
 
     Preference order:
-      1. ``pjm`` on PATH (most common — pip-installed entry point)
-      2. ``projectmem`` on PATH (alias entry point)
-      3. The entry point next to the interpreter that imported this module —
+      1. The entry point next to the interpreter that imported this module —
          ``<prefix>/bin/pjm`` on POSIX, ``<prefix>/Scripts/pjm.exe`` on
-         Windows. Looking only in ``bin/`` meant this branch could never
-         match on Windows.
-      4. Bare ``"pjm"`` as a last resort — preserves prior behaviour and
+         Windows (then the ``projectmem`` alias). Looking only in ``bin/``
+         meant this branch could never match on Windows. It goes first
+         because it is the install that is actually running: with
+         ``/some/venv/bin/pjm init`` and that venv off PATH, asking PATH first
+         baked a different install's pjm (an anaconda one, say) into the hook.
+      2. ``pjm`` on PATH, then the ``projectmem`` alias
+      3. Bare ``"pjm"`` as a last resort — preserves prior behaviour and
          the runtime fallback in the snippet can still find it.
 
     The result is always shell-safe: see ``_shell_path``.
     """
-    found = shutil.which("pjm") or shutil.which("projectmem")
-    if found:
-        return _shell_path(found)
-    if os.name == "nt":
+    if _is_windows():
         candidates = [Path(sys.prefix) / "Scripts" / "pjm.exe",
                       Path(sys.prefix) / "Scripts" / "projectmem.exe"]
     else:
         candidates = [Path(sys.prefix) / "bin" / "pjm",
                       Path(sys.prefix) / "bin" / "projectmem"]
     for guess in candidates:
-        if guess.exists():
+        if guess.is_file() and (_is_windows() or os.access(guess, os.X_OK)):
             return _shell_path(str(guess))
+    found = shutil.which("pjm") or shutil.which("projectmem")
+    if found:
+        return _shell_path(found)
     return "pjm"
 
 
