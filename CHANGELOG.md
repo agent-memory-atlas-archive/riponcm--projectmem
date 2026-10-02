@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.4
 
 **Three reports, three community fixes, and six more bugs found by checking them.** Each report below was reproduced end to end before it was fixed, and each fix was reviewed by someone other than its author.
 
@@ -29,6 +29,12 @@
 - **The guidance states what reading memory costs.** It said a `get_summary` call costs ~500 tokens. Measured on the capped summary it is about 250 tokens on a young project and about 1,100 on an aged one, more with many open issues, so it now says "a few hundred to ~1,500".
 
 - `pjm init` no longer writes `summary_size_limit_kb` to `config.toml`. Nothing ever read it.
+
+- **After upgrading, the CLI says to run `pjm init` in each project**, since that is what refreshes the instructions file and the git hooks.
+
+### Docs
+
+- The README, `llms.txt`, `SECURITY.md` and the tutorial were checked line by line against the code. Fixed: the MCP tool count (17, not 15 or 8), links that broke on PyPI, a link to a contributing guide that did not exist, an example `precheck` line the command never prints, token figures now labelled as estimates, the client-workspace-root routing step marked as planned (it is not wired up yet), and claims that no other tool offers pre-commit warnings or keeps superseded memories — the comparison table was rebuilt from each project's own docs as of 2026-10-02.
 
 Fixes for #18 and #20 were contributed by [Rohan Tiwari](https://github.com/RTE404) and the first cap for #19 by [hylin](https://github.com/linhongyu510). #18 and #19 were reported by [@medium-effort](https://github.com/medium-effort) and #20 by [@bigfree](https://github.com/bigfree).
 

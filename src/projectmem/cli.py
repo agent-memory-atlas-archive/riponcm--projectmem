@@ -441,10 +441,13 @@ def _upgrade_notice() -> None:
         if previous is None:
             return  # first ever run — `pjm init` explains itself already
         typer.secho(
-            f"\nprojectmem upgraded to {__version__} — one MCP server can now "
-            "serve every project.",
+            f"\nprojectmem upgraded to {__version__}.",
             fg=typer.colors.CYAN,
         )
+        # The two follow-ups every upgrade needs: re-init refreshes the
+        # instructions file and git hooks an older release wrote, and doctor
+        # catches configs still pinned to one repo.
+        typer.echo("  Run `pjm init` in each project to refresh its instructions and hooks.")
         typer.echo("  Check your setup with:  pjm doctor\n")
     except Exception:
         # A notice must never be the reason a command fails.

@@ -38,7 +38,7 @@ projectmem is open source and we'd rather be transparent about the trade-offs th
 
 6. **Memory files are AI instructions — treat like code.** AI agents read `AI_INSTRUCTIONS.md`, `PROJECT_MAP.md`, and `summary.md` as authoritative guidance. Malicious prompt-injection text in those files can manipulate AI behavior. Review changes like you'd review code.
 
-7. **The MCP server is local-only.** `pjm-mcp` listens on stdio, not over the network. No remote attack surface — but any local AI client you connect can write to your memory via the 8 MCP tools.
+7. **The MCP server is local-only.** `pjm-mcp` listens on stdio, not over the network. No remote attack surface — but any local AI client you connect can write to your memory through its 5 write tools (of 17).
 
 ## Fully Uninstall
 

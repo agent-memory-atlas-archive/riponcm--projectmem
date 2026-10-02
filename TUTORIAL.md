@@ -1,7 +1,7 @@
 # projectmem — Tutorial
 
-> **Watch the 60-second promo:** [youtu.be/YCqfJ8-XVqY](https://youtu.be/YCqfJ8-XVqY)
-> A full screen-recorded walkthrough is coming soon — this written version
+> **Watch the full screen-recorded tutorial:** [youtu.be/pELGdXHj_Ls](https://youtu.be/pELGdXHj_Ls)
+> (or the [60-second promo](https://youtu.be/YCqfJ8-XVqY)). This written version
 > covers the same flow step-by-step so you can follow along on your own
 > project.
 
@@ -243,5 +243,5 @@ In about 15 minutes you exercised every part of projectmem:
 
 ---
 
-*Last updated for projectmem 0.3.1 — see the [changelog](CHANGELOG.md) for what
+*Last updated for projectmem 0.3.4 — see the [changelog](CHANGELOG.md) for what
 changed since.*
