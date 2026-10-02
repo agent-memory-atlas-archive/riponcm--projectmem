@@ -14,23 +14,41 @@ signal of all).
 """
 from __future__ import annotations
 
+import posixpath
+import re
 import subprocess
 from pathlib import Path
 
-from projectmem.models import Event, location_to_file, superseded_ids
+from projectmem.models import (
+    Event,
+    location_to_file,
+    normalize_timestamp,
+    superseded_ids,
+)
+from projectmem.storage import MEM_DIR
 
 # A memory is "possibly stale" once its file changed in this many commits
 # after the event was logged. 3 tracks the precheck block threshold — one
 # rewrite is normal drift, three separate changes mean the file moved on.
 STALE_COMMIT_THRESHOLD = 3
 
+# ``Path("C:/x").is_absolute()`` is False on POSIX; an MCP client on Windows
+# can still hand us that spelling.
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:/")
+
 # Event types that assert something durable about a file. Attempts are
 # excluded: a failed attempt is a historical fact, not a claim about the
 # file's current shape — it cannot go stale.
 _STALE_CHECKED_TYPES = ("decision", "fix", "note")
 
+# Auto-captured event types that are likewise records of a commit rather
+# than claims: "Fix: ..." and "New feature: ..." say what a commit did. An
+# auto-captured decision ("Breaking change:", "Refactor:") does assert the
+# file's shape, so it stays checked (see ``find_stale_events``).
+_AUTO_CAPTURED_FACT_TYPES = ("fix", "note")
 
-def location_file(event: Event) -> str | None:
+
+def location_file(event: Event, root: Path | None = None) -> str | None:
     """File part of an event's location (``src/auth.py:42`` -> ``src/auth.py``)."""
     if not event.location:
         return None
@@ -38,7 +56,53 @@ def location_file(event: Event) -> str | None:
     # Locations like "class AuthHandler" or "deploy pipeline" aren't paths.
     if not file_part or ("/" not in file_part and "." not in file_part):
         return None
+    # Memory files are not code. summary.md is regenerated on every event, so
+    # any event located there would be flagged within three commits; before
+    # #20 auto-capture located most commits there, and the log is append-only,
+    # so those events are still in users' logs. Judge them never, not forever.
+    if is_memory_path(file_part, root):
+        return None
     return file_part
+
+
+def is_memory_path(path: str, root: Path | None = None) -> bool:
+    """True for a path inside the project's own ``.projectmem/``.
+
+    One rule for every reader (staleness, precheck, the MCP tool): the path,
+    made project-relative, has ``.projectmem`` as its FIRST component.
+    ``sub/.projectmem/x`` and ``tests/fixtures/.projectmem/x`` are ordinary
+    files — only the memory directory at the root is projectmem's — and so is
+    anything outside the project.
+
+    A relative path is project-relative (git output, event locations). One
+    that climbs out of the root (``../.projectmem/summary.md``) was typed from
+    a subdirectory — an MCP client's cwd, say — and is anchored there instead.
+    ``src/../.projectmem/summary.md`` and ``./`` fold through ``normpath``.
+    """
+    root_posix = (root or Path.cwd()).resolve().as_posix()
+    normalized = path.replace("\\", "/")
+    if _WINDOWS_DRIVE.match(normalized) and not _WINDOWS_DRIVE.match(root_posix):
+        # A Windows path handed to a POSIX server cannot be anchored to the
+        # root at all. "Safe to modify" is the costly mistake, so err towards
+        # "ours" when the path names a `.projectmem` directory anywhere.
+        return MEM_DIR in normalized.split("/")
+    is_abs = posixpath.isabs(normalized) or bool(_WINDOWS_DRIVE.match(normalized))
+    bases = [None] if is_abs else [root_posix, _cwd_posix()]
+    for base in bases:
+        candidate = normalized if base is None else posixpath.join(base, normalized)
+        try:
+            rel = Path(posixpath.normpath(candidate)).relative_to(root_posix)
+        except ValueError:
+            continue  # outside the project from this anchor
+        return bool(rel.parts) and rel.parts[0] == MEM_DIR
+    return False
+
+
+def _cwd_posix() -> str:
+    try:
+        return Path.cwd().resolve().as_posix()
+    except OSError:  # cwd deleted under us
+        return "/"
 
 
 def commits_touching_since(
@@ -56,13 +120,27 @@ def commits_touching_since(
     times = commit_times(file_path, root)
     if times is None:
         return None
-    return sum(1 for t in times if t > since_iso)
+    since = _zulu(since_iso)
+    return sum(1 for t in times if t > since)
+
+
+def _zulu(ts: str | None) -> str:
+    """Canonical UTC form of an event timestamp; "" (no timestamp) stays ""."""
+    return normalize_timestamp(ts) if ts else ""
 
 
 def commit_times(
     file_path: str, root: Path | None = None, since_iso: str | None = None
 ) -> list[str] | None:
-    """Every commit time that touched `file_path`, newest first.
+    """Every commit time that touched `file_path`, newest first, as UTC Zulu.
+
+    Times are returned in the same canonical form events are stored in
+    (``2026-10-02T18:41:22Z``), so callers may compare them as strings. Git's
+    ``%cI`` carries the committer's own offset (``12:41:32-06:00``), and a
+    string comparison between that and a Zulu event timestamp is a comparison
+    of wall-clock digits in two different zones: the same five events and the
+    same history were flagged 0, 2 or 5 times depending on the machine's TZ
+    (0.3.3 regression).
 
     One ``git log`` answers any number of "how many commits since T?"
     questions by counting in memory, because the answer for a later T is
@@ -97,7 +175,11 @@ def commit_times(
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [
+        normalize_timestamp(line.strip())
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
 
 
 def find_stale_events(
@@ -129,7 +211,14 @@ def find_stale_events(
     for event in events:
         if event.type not in _STALE_CHECKED_TYPES or event.id in retired:
             continue
-        file_path = location_file(event)
+        # An auto-captured fix or note is a record of a commit, not a human's
+        # claim about the file — the same reason attempts are excluded. Three
+        # more commits to the file are the file being worked on, not the
+        # record going out of date; flagging it only taught users to ignore
+        # the warning. An auto-captured decision is a claim, and stays.
+        if event.auto_captured and event.type in _AUTO_CAPTURED_FACT_TYPES:
+            continue
+        file_path = location_file(event, root_path)
         if not file_path:
             continue
         if only_files is not None and file_path not in only_files:
@@ -140,7 +229,7 @@ def find_stale_events(
     # that cites it — commits before that cannot affect any count.
     oldest: dict[str, str] = {}
     for event, file_path in candidates:
-        ts = event.timestamp or ""
+        ts = _zulu(event.timestamp)
         if file_path not in oldest or ts < oldest[file_path]:
             oldest[file_path] = ts
 
@@ -164,7 +253,10 @@ def find_stale_events(
         times = history.get(file_path)
         if times is None:
             continue  # git could not answer; "cannot judge" is not "stale"
-        count = sum(1 for t in times if t > event.timestamp)
+        # Both sides are canonical Zulu (see ``commit_times``), so the string
+        # order is the time order.
+        logged = _zulu(event.timestamp)
+        count = sum(1 for t in times if t > logged)
         if count >= threshold:
             flagged.append({"event": event, "file": file_path, "commits_since": count})
     return flagged

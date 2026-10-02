@@ -28,6 +28,7 @@ import typer
 
 from projectmem.glyphs import RULE
 from projectmem.models import Event, location_to_file, superseded_ids
+from projectmem.staleness import is_memory_path
 from projectmem.storage import MEM_DIR, read_events, require_mem_dir
 
 
@@ -249,6 +250,15 @@ def _analyze_files(
     cutoff = now - timedelta(days=RECENT_DAYS)
 
     warnings: list[dict[str, Any]] = []
+
+    # Memory files are not code under review. summary.md is regenerated on
+    # every event, so it is staged in most commits and its churn is projectmem's
+    # own doing: checking it reported "HIGH CHURN: 7 changes in last 30 days /
+    # May indicate unresolved architectural issue" about the memory layer.
+    # Filtered here, not in the callers, so the MCP precheck_file path is covered.
+    files = [f for f in files if not is_memory_path(f, root)]
+    if not files:
+        return warnings
 
     # ── Check 6 input: stale memories for the files being checked ──
     # Decisions/fixes/notes whose cited file changed substantially after
