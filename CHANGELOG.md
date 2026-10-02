@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+**Three reports, three community fixes, and six more bugs found by checking them.** Each report below was reproduced end to end before it was fixed, and each fix was reviewed by someone other than its author.
+
+### Fixed
+
+- **The guidance named arguments the tools reject.** `AI_INSTRUCTIONS.md`, the `CLAUDE.md`/`AGENTS.md` bridge and the MCP server's own instructions said `precheck_file(path)`; the argument is `file_path`, so an agent that copied the call got a validation error. The README had the same mistake for `get_issue(id)` (it is `issue_id`). A test now reads every call shown on every surface and checks it against the tool's real signature, so a rename can no longer leave the docs behind. ([#18](https://github.com/riponcm/projectmem/issues/18), [#22](https://github.com/riponcm/projectmem/pull/22))
+
+- **`summary.md` grew without limit.** Notes were capped at 10, but Recent issues and Decisions listed everything ever logged, so on an aged project the summary cost more to read than the code it describes. Every **open** issue is still listed — it is the one thing the next session must not miss — while fixed issues are capped at the newest 10 and decisions at the newest 15, each with a line saying how many were left out and where to find them. Issue ids sort as numbers, so ids past 9999 no longer sort the newest to the bottom. A project with many open issues gets a slightly longer summary than a flat cap would give; that is deliberate. ([#19](https://github.com/riponcm/projectmem/issues/19), [#25](https://github.com/riponcm/projectmem/pull/25))
+
+- **Auto-captured commits were filed under `.projectmem/summary.md`.** The location was the first changed path in git's sort order, and `.projectmem/` sorts first, so most commits pointed at the regenerated summary; the staleness check then called valid memories stale and the real file lost its history. The location is now the file the commit is about: deleted paths are skipped, renames use the new name, the first commit and merge commits list their files, non-ASCII paths are unquoted, and source code is preferred over tests, docs, build files, assets and lockfiles. ([#20](https://github.com/riponcm/projectmem/issues/20), [#23](https://github.com/riponcm/projectmem/pull/23))
+
+- **Staleness depended on the time zone — a regression in 0.3.3.** The 0.3.3 speed-up compared git's local-offset commit times with UTC event times as plain strings. West of UTC, recent stale memories were never flagged; east of UTC, fresh ones were flagged at once. Both sides are now compared in UTC.
+
+- **Already-polluted logs stop warning without being rewritten.** Events filed under `.projectmem/` before this release are no longer stale-checked, and neither are auto-captured fix and note records — they record what a commit did, which cannot go stale. Auto-captured decisions (`Refactor:`, `Breaking change:`) still are. Nothing to run.
+
+- **One mistyped issue id broke every later write.** `pjm attempt --issue 0099` (or `record_attempt` with a wrong `issue_id`) appended an attempt with no issue behind it, and the summary rebuild after every following command raised `StopIteration`. Unknown ids are now refused before anything is written, ids are normalised the way `pjm fix` does it, a stale active-issue marker is ignored and cleared, and the summary skips a malformed group instead of crashing.
+
+- **`pjm precheck` warned about projectmem's own files.** Staging the regenerated summary printed "HIGH CHURN … may indicate an unresolved architectural issue". Memory files are left out of the check, and `precheck_file` on one now says to use the log tools instead of calling it safe to edit.
+
+- **Fixes to the git hooks never reached existing projects.** `pjm init` skipped any hook it had already installed, so the 0.3.3 hook fixes for Windows and GitHub Desktop only reached new projects. Re-running `pjm init` now refreshes projectmem's block in place and leaves everything else in the hook untouched. The hook also records the `pjm` that ran `init`, not whichever one PATH finds first.
+
+### Changed
+
+- **`pjm init` refreshes an outdated `AI_INSTRUCTIONS.md`.** It was written only when missing, so every existing project kept the guidance of the release that created it — including the wrong argument above. Re-run `pjm init` once: the file is brought up to date, your previous copy is saved as `AI_INSTRUCTIONS.md.bak` (gitignored), and your inherited global-memory block is kept. A file already at the current version is never touched.
+
+- **The guidance states what reading memory costs.** It said a `get_summary` call costs ~500 tokens. Measured on the capped summary it is about 250 tokens on a young project and about 1,100 on an aged one, more with many open issues, so it now says "a few hundred to ~1,500".
+
+- `pjm init` no longer writes `summary_size_limit_kb` to `config.toml`. Nothing ever read it.
+
+Fixes for #18 and #20 were contributed by [Rohan Tiwari](https://github.com/RTE404) and the first cap for #19 by [hylin](https://github.com/linhongyu510). #18 and #19 were reported by [@medium-effort](https://github.com/medium-effort) and #20 by [@bigfree](https://github.com/bigfree).
+
 ## 0.3.3
 
 **Three reports from Windows, and the tool no longer freezes as your project grows.** Every fix below was found by running projectmem on a real machine, not by reading the code.
