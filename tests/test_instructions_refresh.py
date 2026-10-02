@@ -121,3 +121,24 @@ def test_initialize_alone_never_rewrites_the_file(tmp_path):
     initialize(tmp_path)
     assert path.read_text(encoding="utf-8") == STALE
     assert not (path.parent / INSTRUCTIONS_BACKUP_FILE).exists()
+
+
+# The template's fingerprint at each INSTRUCTIONS_VERSION. Editing the
+# template without bumping the version means no existing project ever gets
+# the edit: refresh only rewrites a file whose marker is older. When this
+# fails, bump INSTRUCTIONS_VERSION in storage.py and record the new hash.
+_TEMPLATE_FINGERPRINTS = {
+    1: "e699906caeddbf8a",
+}
+
+
+def test_a_template_change_comes_with_a_version_bump():
+    import hashlib
+
+    from projectmem.storage import INSTRUCTIONS_VERSION, ai_instructions
+
+    digest = hashlib.sha256(ai_instructions().encode()).hexdigest()[:16]
+    assert _TEMPLATE_FINGERPRINTS.get(INSTRUCTIONS_VERSION) == digest, (
+        "ai_instructions() changed: bump INSTRUCTIONS_VERSION and add "
+        f"{INSTRUCTIONS_VERSION + 1}: \"<new hash>\" to _TEMPLATE_FINGERPRINTS (now {digest})"
+    )
