@@ -22,6 +22,22 @@ _PLACEHOLDER_PHRASES = (
 )
 
 
+# How much of each growing section summary.md shows (#19). Notes keep their
+# latest-10 window; open issues are never capped.
+RECENT_FIXED_ISSUES = 10
+RECENT_DECISIONS = 15
+
+
+def _issue_sort_key(item: tuple[str, list[Event]]) -> tuple[int, str]:
+    """Order issue ids numerically: as strings, "10000" sorts before "9999"."""
+    issue_id = item[0]
+    return (int(issue_id) if issue_id.isdecimal() else -1, issue_id)
+
+
+def _fix_for(issue_events: list[Event]) -> Event | None:
+    return next((event for event in reversed(issue_events) if event.type == "fix"), None)
+
+
 def _looks_like_placeholder(text: str) -> bool:
     """True if `text` is empty or contains a known placeholder phrase."""
     if not text:
@@ -109,26 +125,35 @@ def build_summary(
         "## Recent issues",
     ]
 
-    if not issues:
+    # An issue group can lack its `issue` event — an attempt recorded against
+    # a mistyped id, or a hand-edited log. Skip it here rather than crash:
+    # regeneration runs after every write, so one bad event used to make every
+    # later command fail.
+    groups = []
+    for issue_id, issue_events in sorted(issues.items(), key=_issue_sort_key, reverse=True):
+        issue = next((event for event in issue_events if event.type == "issue"), None)
+        if issue is not None:
+            groups.append((issue_id, issue, issue_events, _fix_for(issue_events)))
+    if not groups:
         lines.append("- No issues logged yet.")
     else:
-        # Recent issues is a scannable snapshot, not the whole backlog: cap at
-        # the 10 most recent, matching the Notes section's latest-10 window
-        # (#19). Older issues stay reachable via `pjm search`.
-        recent_issues = sorted(issues.items(), reverse=True)[:10]
-        for issue_id, issue_events in recent_issues:
-            issue = next(event for event in issue_events if event.type == "issue")
-            fix = next((event for event in reversed(issue_events) if event.type == "fix"), None)
+        # A scannable snapshot, not the whole backlog (#19). Every OPEN issue
+        # stays — it is the one thing the next session must not miss — and
+        # only fixed issues are capped. Older ones stay in `pjm search`,
+        # `get_issue(issue_id)` and `.projectmem/issues/`.
+        open_groups = [g for g in groups if g[3] is None]
+        fixed_groups = [g for g in groups if g[3] is not None]
+        for issue_id, issue, issue_events, fix in open_groups + fixed_groups[:RECENT_FIXED_ISSUES]:
             status = "fixed" if fix else "open"
             marker = "DONE" if fix else "OPEN"
-            
+
             issue_loc = f" [{issue.location}]" if issue.location else ""
             if fix:
                 fix_loc = f" [{fix.location}]" if fix.location else ""
                 outcome = f" -> {fix.summary}{fix_loc}"
             else:
                 outcome = ""
-            
+
             lines.append(f"- [{marker}] #{issue_id} {issue.summary}{issue_loc}{outcome} ({status})")
             # Surface non-worked attempts. Both `failed` and `partial` outcomes
             # encode lessons the next session needs — dropping `partial` (L-027b)
@@ -143,10 +168,24 @@ def build_summary(
                 loc = f" [{lesson_event.location}]" if lesson_event.location else ""
                 tag = label.get(lesson_event.outcome or "failed", "Attempt")
                 lines.append(f"  - {tag}: {lesson_event.summary}{loc}")
+        hidden = len(fixed_groups) - RECENT_FIXED_ISSUES
+        if hidden > 0:
+            lines.append(
+                f"- ...and {hidden} older fixed issue{'s' if hidden != 1 else ''} "
+                "not shown (`pjm search`, or `get_issue(issue_id)` via MCP)"
+            )
 
     lines.extend(["", "## Decisions"])
     if decisions:
-        for event in decisions:
+        # Same bound for decisions (#19): on an aged project this section was
+        # most of the summary. Newest kept, in the order they were made.
+        hidden = len(decisions) - RECENT_DECISIONS
+        if hidden > 0:
+            lines.append(
+                f"- ...{hidden} earlier decision{'s' if hidden != 1 else ''} "
+                "not shown (`pjm search`, or `search_events(query)` via MCP)"
+            )
+        for event in decisions[-RECENT_DECISIONS:]:
             loc = f" [{event.location}]" if event.location else ""
             lines.append(f"- {event.summary}{loc}")
     else:

@@ -720,6 +720,37 @@ def read_current_issue(root: Path | None = None) -> str | None:
     return text or None
 
 
+def normalize_issue_id(issue_id: str | None) -> str | None:
+    """Normalize issue IDs so `1`, `001`, and `0001` all become `0001`."""
+    if issue_id is None:
+        return None
+    cleaned = issue_id.strip().lstrip("#")
+    if not cleaned:
+        return None
+    if cleaned.isdecimal():
+        return cleaned.zfill(4)
+    return cleaned
+
+
+def issue_exists(events: list[Event], issue_id: str) -> bool:
+    """Return True if an issue event exists for the requested issue ID."""
+    return any(event.type == "issue" and event.issue_id == issue_id for event in events)
+
+
+def active_issue_marker(events: list[Event], root: Path | None = None) -> str | None:
+    """The `.current_issue` marker, if it names an issue that exists.
+
+    A marker can outlive its issue (a hand-edited log, a copied .projectmem/).
+    Trusting it wrote attempts and fixes against an id with no issue behind
+    it, so a stale marker is cleared and treated as absent.
+    """
+    marker = read_current_issue(root)
+    if marker and not issue_exists(events, marker):
+        clear_current_issue(root)
+        return None
+    return marker
+
+
 def clear_current_issue(root: Path | None = None) -> None:
     """Clear the active-issue marker. No-op if it does not exist."""
     try:

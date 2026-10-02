@@ -7,11 +7,13 @@ import typer
 from projectmem.models import Event
 from projectmem.storage import (
     ProjectMemError,
+    active_issue_marker,
     append_event,
     get_git_commit,
+    issue_exists,
     latest_open_issue_within,
     next_issue_id,
-    read_current_issue,
+    normalize_issue_id,
     read_events,
     write_current_issue,
 )
@@ -56,9 +58,17 @@ def run(
 
     issue_id: str | None = None
     if issue:
-        issue_id = issue.lstrip("#")
+        # Same rules as `pjm fix --issue`: `1` means `0001`, and an id with no
+        # issue behind it is refused. Appending an attempt to a typo used to
+        # leave an orphan group that crashed every later summary rebuild.
+        issue_id = normalize_issue_id(issue)
+        if issue_id is None or not issue_exists(events, issue_id):
+            raise ProjectMemError(
+                f"Issue #{issue_id or issue.strip().lstrip('#') or '?'} was not found. "
+                "Run `pjm search <query>` or `pjm brief` to find the issue ID."
+            )
     else:
-        issue_id = read_current_issue(root) or latest_open_issue_within(
+        issue_id = active_issue_marker(events, root) or latest_open_issue_within(
             events, minutes=AUTO_ATTACH_WINDOW_MINUTES
         )
 
