@@ -156,3 +156,109 @@ def test_docs_outrank_lockfiles_and_a_tie_keeps_git_order(tmp_path):
         "src/b.py": "b = 1\n",
     })
     assert _last_event(root).location == "src/a.py"
+
+
+# ── Review follow-ups: rank by what the file IS, with code as a positive test ──
+
+def test_manifests_and_build_files_never_beat_source(tmp_path):
+    """`Dockerfile`, `Makefile`, `package.json`, `pyproject.toml` all sort
+    before `src/` and all used to win: nothing said they were not code."""
+    root = _repo(tmp_path)
+    for manifest, code in (
+        ("package.json", "src/app.py"),
+        ("Dockerfile", "src/app.py"),
+        ("pyproject.toml", "src/app.py"),
+        ("Makefile", "src/main.c"),
+        ("requirements.txt", "src/app.py"),
+        ("CMakeLists.txt", "src/main.c"),
+    ):
+        _commit(root, f"fix: {manifest}", {manifest: "x\n", code: f"# {manifest}\n"})
+        assert _last_event(root).location == code, manifest
+
+
+def test_first_commit_with_manifests_is_located_at_the_code(tmp_path):
+    root = _repo(tmp_path, initial_commit=False)
+    _commit(root, "fix: initial import", {
+        "Dockerfile": "FROM x\n",
+        "package.json": "{}\n",
+        "pyproject.toml": "[project]\n",
+        "src/app.py": "print('hi')\n",
+    })
+
+    assert _last_event(root).location == "src/app.py"
+
+
+def test_source_outranks_tests_which_outrank_other_files(tmp_path):
+    root = _repo(tmp_path)
+    _commit(root, "fix: ui and its test", {
+        "tests/test_app.py": "def test(): pass\n",
+        "web/ui.js": "x\n",
+    })
+    assert _last_event(root).location == "web/ui.js"
+
+    _commit(root, "fix: test and a data file", {
+        "src/data/words.txt": "a\n",          # .txt is not a doc, not code
+        "tests/test_words.py": "def test(): pass\n",
+    })
+    assert _last_event(root).location == "tests/test_words.py"
+
+    _commit(root, "fix: sphinx config", {
+        "docs/conf.py": "x = 1\n",            # code, even inside docs/
+        "docs/guide.md": "# g\n",
+    })
+    assert _last_event(root).location == "docs/conf.py"
+
+
+def test_only_a_top_level_dot_dir_or_dot_file_counts_as_config(tmp_path):
+    """`src/.well-known/foo.ts` is code; `.github/ci.yml` and `.gitignore` are not."""
+    root = _repo(tmp_path)
+    _commit(root, "fix: hidden module and docs", {
+        "README.md": "# r\n",
+        "src/.hidden/x.py": "x = 1\n",
+    })
+    assert _last_event(root).location == "src/.hidden/x.py"
+
+    _commit(root, "fix: well-known and plain", {
+        "src/.well-known/foo.ts": "x\n",
+        "src/zzz.ts": "x\n",
+    })
+    assert _last_event(root).location == "src/.well-known/foo.ts"  # tie: git order
+
+    _commit(root, "fix: ci, dotfile and code", {
+        ".github/workflows/ci.yml": "on: push\n",
+        ".env.example": "X=1\n",
+        "src/app.py": "x\n",
+    })
+    assert _last_event(root).location == "src/app.py"
+
+
+def test_a_merge_commit_records_the_files_it_brought_in(tmp_path):
+    """`git diff-tree HEAD` prints nothing for a merge; diff against the first
+    parent gives the merge exactly the files it landed, not the whole branch."""
+    root = _repo(tmp_path)
+    _commit(root, "add: base", {"src/base.py": "b\n"})
+    _git(root, "checkout", "-qb", "feature")
+    _commit(root, "add: feature", {"src/feature.py": "f\n"})
+    _git(root, "checkout", "-q", "-")
+    _commit(root, "add: mainline", {"src/other.py": "o\n"})
+    _git(root, "merge", "-q", "--no-ff", "-m", "fix: merge the feature branch", "feature")
+
+    event = _last_event(root)
+
+    assert event.files == ["src/feature.py"]
+    assert event.location == "src/feature.py"
+
+
+def test_memory_files_come_last_so_the_cap_keeps_the_code(tmp_path):
+    """Twelve memory files sort ahead of `src/`; `files[:10]` used to hold
+    only them, so the location was not even in the event's file list."""
+    root = _repo(tmp_path)
+    files = {f".projectmem/issues/{i:04d}-x.md": "x\n" for i in range(12)}
+    files["src/app.py"] = "x\n"
+    _commit(root, "fix: lots of issues and one file", files)
+
+    event = _last_event(root)
+
+    assert event.location == "src/app.py"
+    assert event.files[0] == "src/app.py"
+    assert len(event.files) == 10

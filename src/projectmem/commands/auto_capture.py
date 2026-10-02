@@ -17,6 +17,7 @@ from typing import Any
 import typer
 
 from projectmem.models import Event
+from projectmem.staleness import is_memory_path
 from projectmem.storage import (
     MEM_DIR,
     append_event,
@@ -134,7 +135,9 @@ def _capture_commit(root: Path) -> None:
         return
 
     changes = _git_last_changes(root)
-    files = [path for _, path in changes]
+    # Memory files last, so the 10-file cap never drops the code (and the
+    # location is always inside `files`).
+    files = sorted((path for _, path in changes), key=is_memory_path)
     location = _pick_location(changes)
     commit_hash = get_git_commit(root)
 
@@ -267,20 +270,31 @@ def _git_last_changes(root: Path) -> list[tuple[str, str]]:
     exists, so an event located there would be flagged "no longer exists"
     forever and ``pjm precheck`` on the surviving file would show nothing.
 
-    ``--root`` makes the repo's first commit list its files instead of nothing;
-    ``-z`` keeps a non-ASCII path as bytes instead of a C-quoted
-    ``"src/caf\\303\\251.py"`` that matches no file on disk.
+    Diffing ``HEAD^..HEAD`` explicitly gives a merge commit the files it
+    brought onto its first parent (``diff-tree HEAD`` prints nothing for a
+    merge, and ``-m`` concatenates the diff against every parent). The repo's
+    first commit has no ``HEAD^``, so it falls back to ``--root``. ``-l1000``
+    caps rename detection so a huge commit cannot run into the 5 s timeout
+    and silently lose its files; ``-z`` keeps a non-ASCII path as bytes
+    instead of a C-quoted ``"src/caf\\303\\251.py"`` that matches no file.
     """
-    try:
-        result = subprocess.run(
-            ["git", "diff-tree", "--root", "-r", "-M", "-z", "--no-commit-id",
-             "--name-status", "HEAD"],
-            cwd=root,
-            check=True,
-            capture_output=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    common = ["-r", "-M", "-l1000", "-z", "--name-status"]
+    attempts = (
+        ["git", "diff-tree", *common, "HEAD^", "HEAD"],
+        ["git", "diff-tree", "--root", "--no-commit-id", *common, "HEAD"],
+    )
+    result = None
+    for cmd in attempts:
+        try:
+            result = subprocess.run(
+                cmd, cwd=root, check=True, capture_output=True, timeout=5
+            )
+            break
+        except subprocess.CalledProcessError:
+            continue  # no parent: try the root form
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+    if result is None:
         return []
     # Not `text=True`: a hook runs under whatever locale git gave it, often C,
     # and a non-UTF-8 default encoding would turn café into a crash.
@@ -299,27 +313,65 @@ def _git_last_changes(root: Path) -> list[tuple[str, str]]:
     return changes
 
 
-# Paths that describe or build the code rather than being it. A commit that
-# touches both `README.md` and `src/app.py` is about `src/app.py`; before this
-# ranking git's path order put the uppercase root file first.
-_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
-_DOC_DIRS = ("docs/", "doc/")
-_LOCK_NAMES = (
-    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
-    "Pipfile.lock", "Cargo.lock", "Gemfile.lock", "composer.lock", "go.sum",
+# ── Location ranking ─────────────────────────────────────────────────────
+# When a commit touches code, the location is the code. Git lists paths in
+# sorted order, so without a ranking `Dockerfile`, `README.md` or
+# `.github/ci.yml` won every time they appeared next to `src/`.
+#
+# Rank 0 is a positive test. `models._SOURCE_SUFFIXES` is the wrong table for
+# it: that set answers "does this look like a file path" and so includes
+# md, txt, json, toml and lock.
+RANK_SOURCE, RANK_TEST, RANK_OTHER, RANK_DOC, RANK_BUILD, RANK_LOCK = range(6)
+
+_CODE_SUFFIXES = frozenset(
+    "py pyi js jsx ts tsx mjs cjs rs go rb php java kt kts swift c h cc cpp hpp "
+    "cs m mm sh bash zsh ps1 sql html css scss sass vue svelte gradle tf proto "
+    "graphql ex exs erl hs scala clj lua r jl dart zig nim".split()
 )
+_TEST_DIRS = frozenset({"tests", "test", "__tests__", "spec"})
+_TEST_NAME = re.compile(r"(^test_.*|.*_test\.[^.]+|.*\.(spec|test)\.[^.]+)$")
+_DOC_SUFFIXES = (".md", ".rst", ".adoc")
+_DOC_DIRS = frozenset({"docs", "doc"})
+_DOC_NAMES = ("readme", "changelog", "notice", "license", "licence", "authors",
+              "contributing", "code_of_conduct")
+_BUILD_NAMES = frozenset({
+    "makefile", "cmakelists.txt", "justfile", "package.json", "pyproject.toml",
+    "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "manifest.in", "cargo.toml",
+    "go.mod", "gemfile", "rakefile", "pipfile", "composer.json", "build.gradle",
+    "build.gradle.kts", "settings.gradle", "pom.xml", "mix.exs", "deno.json",
+    "babel.config.js", "webpack.config.js", "procfile", "vagrantfile",
+})
+_BUILD_PREFIXES = ("dockerfile", "docker-compose", "requirements", "tsconfig",
+                   "jsconfig")
+_BUILD_RE = re.compile(r"^[^.]+\.config\.[^.]+$")  # vite.config.ts, jest.config.js
+_LOCK_NAMES = frozenset({
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
+    "pipfile.lock", "cargo.lock", "gemfile.lock", "composer.lock", "go.sum",
+})
 
 
 def _location_rank(path: str) -> int:
-    """0 for code, 1 for docs, 2 for CI/config/lockfiles. Lower wins."""
-    name = path.rsplit("/", 1)[-1]
-    if name in _LOCK_NAMES or name.endswith(".lock"):
-        return 2
-    if any(part.startswith(".") for part in path.split("/")):
-        return 2  # `.github/ci.yml`, `.gitignore`, `.env.example` ...
-    if path.lower().startswith(_DOC_DIRS) or name.lower().endswith(_DOC_SUFFIXES):
-        return 1
-    return 0
+    """Lower wins: source, tests, other, docs, build/manifest/CI, lockfiles."""
+    parts = path.split("/")
+    name = parts[-1]
+    lower = name.lower()
+    suffix = lower.rsplit(".", 1)[-1] if "." in lower else ""
+    if lower in _LOCK_NAMES or lower.endswith(".lock"):
+        return RANK_LOCK
+    # Only the top-level directory and the file name count as "dot" config:
+    # `.github/`, `.husky/`, `.gitignore`, `.env.example`, `.eslintrc.json`.
+    # `src/.well-known/foo.ts` is code.
+    if parts[0].startswith(".") or lower.startswith(".") or lower in _BUILD_NAMES \
+            or lower.startswith(_BUILD_PREFIXES) or _BUILD_RE.match(lower):
+        return RANK_BUILD
+    if lower.endswith(_DOC_SUFFIXES) or lower.startswith(_DOC_NAMES):
+        return RANK_DOC
+    if suffix in _CODE_SUFFIXES:  # before the docs dir: `docs/conf.py` is code
+        in_test_dir = any(p.lower() in _TEST_DIRS for p in parts[:-1])
+        return RANK_TEST if in_test_dir or _TEST_NAME.match(lower) else RANK_SOURCE
+    if parts[0].lower() in _DOC_DIRS:
+        return RANK_DOC
+    return RANK_OTHER
 
 
 def _pick_location(changes: list[tuple[str, str]]) -> str | None:
@@ -328,12 +380,12 @@ def _pick_location(changes: list[tuple[str, str]]) -> str | None:
     Candidates are the paths that still exist after the commit — a deleted
     file would be flagged "no longer exists" on every later precheck — minus
     memory files: summary.md is regenerated on every event, so it is in most
-    commits, and `.projectmem/` sorts ahead of most paths (#20). Among those,
-    code beats docs beats CI/config/lockfiles; a tie keeps git's order.
+    commits, and `.projectmem/` sorts ahead of most paths (#20). Among those
+    the lowest ``_location_rank`` wins; a tie keeps git's order.
     """
     live = [
         path for status, path in changes
-        if status != "D" and not path.startswith(f"{MEM_DIR}/")
+        if status != "D" and not is_memory_path(path)
     ]
     if not live:
         return None
