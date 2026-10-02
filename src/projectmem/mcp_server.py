@@ -204,7 +204,7 @@ mcp = FastMCP(
         "  3. get_project_map() — loads structural layout when relevant.\n"
         "\n"
         "CONTEXT-SPECIFIC reads:\n"
-        "  - User mentions a specific file → call precheck_file(path).\n"
+        "  - User mentions a specific file → call precheck_file(file_path).\n"
         "  - User mentions a library → call get_global_gotchas(library).\n"
         "\n"
         "DURING work — use MCP write tools, NEVER edit .projectmem/ files\n"

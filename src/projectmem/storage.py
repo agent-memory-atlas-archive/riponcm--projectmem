@@ -334,7 +334,7 @@ def ai_instructions() -> str:
         "1. **Locate it in `PROJECT_MAP.md` `## Structure`** — the path index tells "
         "you where the file lives and what it does; check `## Relationships` for what "
         "it connects to. (`get_project_map()` via MCP.)\n"
-        "2. **Call `precheck_file(path)`** (MCP) or `pjm precheck <path>` (CLI) — "
+        "2. **Call `precheck_file(file_path)`** (MCP) or `pjm precheck <path>` (CLI) — "
         "MANDATORY before proposing ANY change to a file. It surfaces that file's "
         "failed past approaches, open issues, and churn in ~100 tokens, so you never "
         "re-try a known dead-end.\n"

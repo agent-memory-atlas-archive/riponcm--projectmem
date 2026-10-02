@@ -151,7 +151,7 @@ def _claude_md_bridge(project_name: str | None = None) -> str:
         "     source files.\n"
         "  3. `get_project_map()` — loads structural layout when relevant.\n\n"
         "BEFORE modifying ANY file:\n"
-        "  - Call `precheck_file(path)` — check failure history first.\n\n"
+        "  - Call `precheck_file(file_path)` — check failure history first.\n\n"
         "DURING work — use MCP write tools, NEVER edit `.projectmem/`\n"
         "files directly via filesystem write:\n"
         "  - On a bug discovery → `log_issue(summary, location)`.\n"

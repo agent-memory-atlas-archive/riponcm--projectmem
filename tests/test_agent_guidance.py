@@ -71,6 +71,32 @@ def test_supersedes_is_documented_on_every_surface(surface, getter):
     assert "supersede" in text, f"{surface} never mentions supersedes"
 
 
+# ── #18: the guidance must name precheck_file's real argument ───────────────
+
+@pytest.mark.parametrize("surface,getter", [
+    ("AI_INSTRUCTIONS.md (get_instructions)", ai_instructions),
+    ("CLAUDE.md bridge", lambda: _claude_md_bridge("demo")),
+    ("MCP instructions= field", _mcp_instructions),
+])
+def test_precheck_file_is_called_with_its_real_argument_name(surface, getter):
+    """The guidance said precheck_file(path); the parameter is file_path.
+
+    Agents copy the call shape they are shown, so every call then failed
+    validation. Read the name off the tool itself so the two cannot drift.
+    """
+    import inspect
+    import re
+
+    from projectmem import mcp_server
+
+    param = next(iter(inspect.signature(mcp_server.precheck_file).parameters))
+    calls = re.findall(r"precheck_file\((\w+)", getter())
+    assert calls, f"{surface} never shows how to call precheck_file"
+    assert set(calls) == {param}, (
+        f"{surface} calls precheck_file({calls[0]}), but the argument is {param}"
+    )
+
+
 def test_supersedes_guidance_says_what_it_does_to_the_summary():
     """Knowing the argument exists is not enough — it must say why to use it."""
     text = ai_instructions().lower()
