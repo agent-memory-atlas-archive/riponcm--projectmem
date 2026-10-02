@@ -134,6 +134,10 @@ def _capture_commit(root: Path) -> None:
         return
 
     files = _git_last_changed_files(root)
+    # The location is the code this commit is about. Memory files are skipped:
+    # summary.md is regenerated on every event, so it is in most commits, and
+    # `.projectmem/` sorts ahead of most paths — `files[0]` was usually it (#20).
+    code_files = [f for f in files if not f.startswith(f"{MEM_DIR}/")]
     commit_hash = get_git_commit(root)
 
     # Deduplicate: don't re-log if this commit is already captured
@@ -166,7 +170,7 @@ def _capture_commit(root: Path) -> None:
         outcome=matched["outcome"],
         files=files[:10],  # Cap at 10 files
         git_commit=commit_hash,
-        location=files[0] if files else None,
+        location=code_files[0] if code_files else None,
         auto_captured=True,
         capture_source=matched["capture_source"],
         capture_confidence=matched["confidence"],
