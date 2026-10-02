@@ -112,7 +112,11 @@ def build_summary(
     if not issues:
         lines.append("- No issues logged yet.")
     else:
-        for issue_id, issue_events in sorted(issues.items(), reverse=True):
+        # Recent issues is a scannable snapshot, not the whole backlog: cap at
+        # the 10 most recent, matching the Notes section's latest-10 window
+        # (#19). Older issues stay reachable via `pjm search`.
+        recent_issues = sorted(issues.items(), reverse=True)[:10]
+        for issue_id, issue_events in recent_issues:
             issue = next(event for event in issue_events if event.type == "issue")
             fix = next((event for event in reversed(issue_events) if event.type == "fix"), None)
             status = "fixed" if fix else "open"
