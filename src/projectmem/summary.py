@@ -31,7 +31,7 @@ RECENT_DECISIONS = 15
 def _issue_sort_key(item: tuple[str, list[Event]]) -> tuple[int, str]:
     """Order issue ids numerically: as strings, "10000" sorts before "9999"."""
     issue_id = item[0]
-    return (int(issue_id) if issue_id.isdigit() else -1, issue_id)
+    return (int(issue_id) if issue_id.isdecimal() else -1, issue_id)
 
 
 def _fix_for(issue_events: list[Event]) -> Event | None:
@@ -133,7 +133,7 @@ def build_summary(
     for issue_id, issue_events in sorted(issues.items(), key=_issue_sort_key, reverse=True):
         issue = next((event for event in issue_events if event.type == "issue"), None)
         if issue is not None:
-            groups.append((issue_id, issue, issue_events))
+            groups.append((issue_id, issue, issue_events, _fix_for(issue_events)))
     if not groups:
         lines.append("- No issues logged yet.")
     else:
@@ -141,10 +141,9 @@ def build_summary(
         # stays — it is the one thing the next session must not miss — and
         # only fixed issues are capped. Older ones stay in `pjm search`,
         # `get_issue(issue_id)` and `.projectmem/issues/`.
-        open_groups = [g for g in groups if not _fix_for(g[2])]
-        fixed_groups = [g for g in groups if _fix_for(g[2])]
-        for issue_id, issue, issue_events in open_groups + fixed_groups[:RECENT_FIXED_ISSUES]:
-            fix = _fix_for(issue_events)
+        open_groups = [g for g in groups if g[3] is None]
+        fixed_groups = [g for g in groups if g[3] is not None]
+        for issue_id, issue, issue_events, fix in open_groups + fixed_groups[:RECENT_FIXED_ISSUES]:
             status = "fixed" if fix else "open"
             marker = "DONE" if fix else "OPEN"
 
