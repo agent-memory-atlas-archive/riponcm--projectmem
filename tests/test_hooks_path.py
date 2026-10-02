@@ -256,3 +256,142 @@ def test_resolver_with_nothing_found_is_the_bare_name(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(hooks.shutil, "which", lambda name: None)
 
     assert _resolve_pjm_binary() == "pjm"
+
+
+# ── a hook installed by an older release must pick up the current one ───────
+#
+# install_hooks() used to skip any hook that already had our marker, so the
+# baked path, the #!/bin/sh shebang and the forward-slash paths of 0.3.3 never
+# reached a project that had installed hooks earlier. The fixtures below are
+# the text 0.3.2 wrote, byte for byte, with the pjm of a different install
+# (anaconda) baked in.
+
+OLD_SHEBANG = "#!/usr/bin/env bash\n"
+OLD_POST_COMMIT = (
+    '# >>> projectmem auto-capture >>>\n'
+    '# Automatically captures development events into projectmem.\n'
+    '# Installed by: pjm hooks install (or pjm init)\n'
+    '# Remove with:  pjm hooks uninstall\n'
+    'PJM_BIN="/opt/anaconda3/bin/pjm"\n'
+    'if [ ! -x "$PJM_BIN" ]; then\n'
+    '    PJM_BIN="$(command -v pjm 2>/dev/null || command -v projectmem 2>/dev/null)"\n'
+    'fi\n'
+    'if [ -d ".projectmem" ] && [ -n "$PJM_BIN" ]; then\n'
+    '    "$PJM_BIN" _auto-capture "commit" >/dev/null 2>&1 &\n'
+    'fi\n'
+    '# <<< projectmem auto-capture <<<\n'
+)
+OLD_PRE_COMMIT = (
+    '# >>> projectmem auto-capture >>>\n'
+    '# Pre-commit warning check against project memory.\n'
+    '# Installed by: pjm hooks install (or pjm init)\n'
+    '# Remove with:  pjm hooks uninstall\n'
+    '# Bypass once:  git commit --no-verify\n'
+    'PJM_BIN="/opt/anaconda3/bin/pjm"\n'
+    'if [ ! -x "$PJM_BIN" ]; then\n'
+    '    PJM_BIN="$(command -v pjm 2>/dev/null || command -v projectmem 2>/dev/null)"\n'
+    'fi\n'
+    'if [ -d ".projectmem" ] && [ -n "$PJM_BIN" ]; then\n'
+    '    "$PJM_BIN" precheck --level warn || true\n'
+    'fi\n'
+    '# <<< projectmem auto-capture <<<\n'
+)
+
+
+def _venv_pjm(tmp_path: Path, monkeypatch) -> str:
+    import projectmem.commands.hooks as hooks
+
+    binary = _fake_prefix(tmp_path, "pjm", "bin")
+    monkeypatch.setattr(hooks, "_is_windows", lambda: False)
+    monkeypatch.setattr(hooks.sys, "prefix", str(binary.parent.parent))
+    return binary.as_posix()
+
+
+def _hooks_dir(tmp_path: Path) -> Path:
+    hooks_dir = tmp_path / "repo" / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    return hooks_dir
+
+
+def test_a_hook_baked_by_an_old_release_gets_the_new_path_and_shebang(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from projectmem.commands.hooks import HOOK_SHEBANG
+
+    pjm = _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    (hooks_dir / "post-commit").write_text(OLD_SHEBANG + OLD_POST_COMMIT, encoding="utf-8")
+    (hooks_dir / "post-merge").write_text(
+        OLD_SHEBANG + OLD_POST_COMMIT.replace('"commit"', '"merge"'), encoding="utf-8"
+    )
+    (hooks_dir / "pre-commit").write_text(OLD_SHEBANG + OLD_PRE_COMMIT, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+
+    for name in ("post-commit", "post-merge", "pre-commit"):
+        text = (hooks_dir / name).read_text(encoding="utf-8")
+        assert text.startswith(HOOK_SHEBANG), f"{name} kept the old shebang"
+        assert f'PJM_BIN="{pjm}"' in text
+        assert "anaconda" not in text
+        assert text.count(HOOK_MARKER_START) == 1
+        assert os.access(hooks_dir / name, os.X_OK)
+    assert 'precheck --level warn' in (hooks_dir / "pre-commit").read_text(encoding="utf-8")
+    assert '_auto-capture "merge"' in (hooks_dir / "post-merge").read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert "projectmem git hooks refreshed: post-commit, post-merge, pre-commit" in out
+    assert "installed:" not in out
+
+
+def test_a_users_own_lines_and_shebang_survive_a_refresh_byte_for_byte(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pjm = _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    before = "#!/usr/bin/env bash\nset -e\necho 'lint first'\n\n"
+    after = "\n# then tests\npytest -q  \n\ttrailing\n"
+    (hooks_dir / "pre-commit").write_text(before + OLD_PRE_COMMIT + after, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+
+    text = (hooks_dir / "pre-commit").read_text(encoding="utf-8")
+    assert text.startswith(before), "the user's shebang or lines before the block changed"
+    assert text.endswith(after), "the user's lines after the block changed"
+    assert f'PJM_BIN="{pjm}"' in text
+    assert text.count(HOOK_MARKER_START) == 1
+
+
+def test_a_second_install_changes_nothing_and_says_so(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    (hooks_dir / "post-commit").write_text(OLD_SHEBANG + OLD_POST_COMMIT, encoding="utf-8")
+    (hooks_dir / "pre-commit").write_text("#!/bin/sh\necho mine\n" + OLD_PRE_COMMIT, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+    first = {p.name: p.read_bytes() for p in hooks_dir.iterdir()}
+    capsys.readouterr()
+    install_hooks(hooks_dir)
+
+    assert {p.name: p.read_bytes() for p in hooks_dir.iterdir()} == first
+    assert "projectmem git hooks already installed." in capsys.readouterr().out
+
+
+def test_a_block_with_no_end_marker_is_left_alone_with_a_warning(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _venv_pjm(tmp_path, monkeypatch)
+    hooks_dir = _hooks_dir(tmp_path)
+    broken = (
+        OLD_SHEBANG + "echo mine\n"
+        + OLD_PRE_COMMIT.replace("# <<< projectmem auto-capture <<<\n", "")
+        + "echo also mine\n"
+    )
+    (hooks_dir / "pre-commit").write_text(broken, encoding="utf-8")
+
+    install_hooks(hooks_dir)
+
+    assert (hooks_dir / "pre-commit").read_text(encoding="utf-8") == broken
+    captured = capsys.readouterr()
+    assert "pre-commit" in captured.err and "end marker" in captured.err
+    assert "already installed" not in captured.out

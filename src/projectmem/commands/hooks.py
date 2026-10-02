@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import sys
@@ -156,60 +157,109 @@ def run(action: str = "install", root: Path | None = None) -> None:
         typer.echo(f"Unknown action: {action}")
 
 
+# Shebangs earlier releases wrote when they created a hook file of their own
+# (0.1.1 through 0.3.2). HOOK_SHEBANG replaced it in 0.3.3 (#16).
+_OLD_HOOK_SHEBANGS = ("#!/usr/bin/env bash",)
+
+
+def _sync_hook(hook_path: Path, snippet: str) -> str:
+    """Put `snippet` into one git hook, touching nothing that is not ours.
+
+    Returns what happened: ``installed`` (new block, or new file), ``refreshed``
+    (our existing block replaced because it differed), ``current`` (already the
+    same) or ``skipped`` (a block with no end marker — see below).
+
+    An existing block used to be skipped on sight, so no fix to the hook body
+    ever reached a project that had installed hooks: the baked pjm path, the
+    ``#!/bin/sh`` shebang and the forward-slash paths of 0.3.3 all stayed as the
+    old release wrote them. The block between the markers is projectmem's, so
+    it is replaced in place; everything outside the markers is left as it was.
+    """
+    if not hook_path.exists():
+        hook_path.write_text(HOOK_SHEBANG + snippet, encoding="utf-8")
+        _make_executable(hook_path)
+        return "installed"
+
+    content = hook_path.read_text(encoding="utf-8")
+    start = content.find(HOOK_MARKER_START)
+    if start < 0:
+        hook_path.write_text(
+            content.rstrip("\n") + "\n\n" + snippet, encoding="utf-8"
+        )
+        _make_executable(hook_path)
+        return "installed"
+
+    end = content.find(HOOK_MARKER_END, start)
+    if end < 0:
+        # A hand-edited hook that lost our end marker. Where the block stops is
+        # a guess, and a wrong guess deletes the user's own lines.
+        return "skipped"
+    end += len(HOOK_MARKER_END)
+    if content[end:end + 1] == "\n":
+        end += 1
+
+    updated = content[:start] + snippet + content[end:]
+
+    # The shebang is ours to change only when the file is nothing but ours: an
+    # old projectmem shebang plus marked blocks. Any other content means the
+    # user owns the file, and so the interpreter line.
+    first, _, rest = updated.partition("\n")
+    if first in _OLD_HOOK_SHEBANGS:
+        outside = re.sub(
+            re.escape(HOOK_MARKER_START) + r".*?" + re.escape(HOOK_MARKER_END),
+            "", rest, flags=re.DOTALL,
+        )
+        if not outside.strip():
+            updated = HOOK_SHEBANG + rest
+
+    if updated == content:
+        return "current"
+    hook_path.write_text(updated, encoding="utf-8")
+    _make_executable(hook_path)
+    return "refreshed"
+
+
 def install_hooks(hooks_dir: Path) -> None:
     """Install projectmem auto-capture into git hooks.
 
-    Safe for existing hooks — appends a clearly-marked snippet rather
-    than overwriting the file. The pjm binary path is resolved at install
-    time and baked into the hook (L-047), so the hook works under conda /
-    pyenv / venv where the interactive-shell PATH isn't inherited by git.
+    Safe for existing hooks — adds a clearly-marked snippet rather than
+    overwriting the file, and re-running refreshes that snippet in place. The
+    pjm binary path is resolved at install time and baked into the hook
+    (L-047), so the hook works under conda / pyenv / venv where the
+    interactive-shell PATH isn't inherited by git.
     """
-    installed: list[str] = []
     pjm_path = _resolve_pjm_binary()
 
-    # Auto-capture hooks (post-commit, post-merge)
-    for hook_name, capture_arg in HOOK_CONFIGS.items():
-        hook_path = hooks_dir / hook_name
-        snippet = _auto_capture_snippet(pjm_path, capture_arg)
+    # Auto-capture hooks (post-commit, post-merge), then the pre-commit
+    # precheck warning.
+    snippets = {
+        name: _auto_capture_snippet(pjm_path, arg) for name, arg in HOOK_CONFIGS.items()
+    }
+    snippets["pre-commit"] = _precheck_snippet(pjm_path)
 
-        if hook_path.exists():
-            content = hook_path.read_text(encoding="utf-8")
-            # Already installed — skip
-            if HOOK_MARKER_START in content:
-                continue
-            # Append to existing hook
-            content = content.rstrip("\n") + "\n\n" + snippet
-        else:
-            content = HOOK_SHEBANG + snippet
+    outcomes = {
+        name: _sync_hook(hooks_dir / name, snippet) for name, snippet in snippets.items()
+    }
+    installed = [n for n, o in outcomes.items() if o == "installed"]
+    refreshed = [n for n, o in outcomes.items() if o == "refreshed"]
+    skipped = [n for n, o in outcomes.items() if o == "skipped"]
 
-        hook_path.write_text(content, encoding="utf-8")
-        _make_executable(hook_path)
-        installed.append(hook_name)
-
-    # Pre-commit hook (for precheck warnings)
-    precommit_path = hooks_dir / "pre-commit"
-    precheck_snippet = _precheck_snippet(pjm_path)
-    if precommit_path.exists():
-        content = precommit_path.read_text(encoding="utf-8")
-        if HOOK_MARKER_START not in content:
-            content = content.rstrip("\n") + "\n\n" + precheck_snippet
-            precommit_path.write_text(content, encoding="utf-8")
-            _make_executable(precommit_path)
-            installed.append("pre-commit")
-    else:
-        precommit_path.write_text(
-            HOOK_SHEBANG + precheck_snippet, encoding="utf-8"
+    for name in skipped:
+        typer.echo(
+            f"Warning: .git/hooks/{name} has a projectmem start marker but no end "
+            "marker, so it was left alone. Fix or delete that block, then re-run "
+            "`pjm hooks install`.",
+            err=True,
         )
-        _make_executable(precommit_path)
-        installed.append("pre-commit")
-
     if installed:
         typer.echo(
             f"projectmem git hooks installed: {', '.join(installed)}\n"
             "  Auto-captures: commits, reverts, merges, fixes, features, breaking changes.\n"
             "  Pre-commit: warns about repeating failed approaches and high-churn files."
         )
-    else:
+    if refreshed:
+        typer.echo(f"projectmem git hooks refreshed: {', '.join(refreshed)}")
+    if not (installed or refreshed or skipped):
         typer.echo("projectmem git hooks already installed.")
 
 
