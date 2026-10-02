@@ -64,8 +64,20 @@ pjm-mcp = "projectmem.mcp_server:main"
 packages = ["src/projectmem"]
 
 [tool.hatch.build.targets.sdist]
-# marketing assets are linked from GitHub in the README; no need to ship them to pip users
-exclude = ["brand/"]
+# An allowlist, not a denylist: hatch otherwise packs every file git does not
+# ignore, so a local untracked folder (paper drafts, scratch data) would ship
+# to PyPI the moment someone builds in a working checkout. Marketing assets are
+# linked from GitHub in the README, so brand/ stays out too.
+only-include = [
+  "src",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "CHANGELOG.md",
+  "SECURITY.md",
+  "TUTORIAL.md",
+  "llms.txt",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
