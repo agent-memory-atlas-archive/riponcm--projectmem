@@ -250,6 +250,15 @@ def _analyze_files(
 
     warnings: list[dict[str, Any]] = []
 
+    # Memory files are not code under review. summary.md is regenerated on
+    # every event, so it is staged in most commits and its churn is projectmem's
+    # own doing: checking it reported "HIGH CHURN: 7 changes in last 30 days /
+    # May indicate unresolved architectural issue" about the memory layer.
+    # Filtered here, not in the callers, so the MCP precheck_file path is covered.
+    files = [f for f in files if not _is_memory_file(f)]
+    if not files:
+        return warnings
+
     # ── Check 6 input: stale memories for the files being checked ──
     # Decisions/fixes/notes whose cited file changed substantially after
     # they were logged. Never deleted, never down-ranked — flagged for a
@@ -407,6 +416,17 @@ def _analyze_files(
             })
 
     return warnings
+
+
+def _is_memory_file(file_path: str) -> bool:
+    """True for any path inside ``.projectmem/``, however it was spelled.
+
+    Accepts the forms precheck is handed: ``git diff --name-only`` output,
+    ``./``-prefixed and Windows-separated paths from ``--files``, and the
+    absolute paths the MCP tool allows.
+    """
+    parts = Path(file_path.replace("\\", "/")).parts
+    return MEM_DIR in parts
 
 
 def _events_for_file(file_path: str, events: list[Event]) -> list[Event]:

@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from projectmem.cli import app
+from projectmem.commands.precheck import _analyze_files
 from projectmem.models import Event
 from projectmem.staleness import (
     commit_times,
@@ -28,6 +32,8 @@ from projectmem.staleness import (
     location_file,
 )
 from projectmem.storage import initialize
+
+runner = CliRunner()
 
 
 def _git(repo: Path, *args: str, when: str | None = None) -> str:
@@ -120,6 +126,32 @@ def test_an_old_event_located_at_summary_md_is_not_flagged(repo):
 
     assert location_file(tracked) is None
     assert find_stale_events([tracked, never_committed], repo) == []
+
+
+def test_precheck_skips_a_staged_summary_md(repo, monkeypatch):
+    """Staging the regenerated summary reported HIGH CHURN about the memory
+    layer's own write pattern. Nothing projectmem writes is up for review."""
+    initialize(repo)
+    # Dated inside precheck's 30-day churn window, so the old code did warn.
+    for i in range(5):
+        when = (datetime.now(timezone.utc) - timedelta(days=5 - i)).isoformat()
+        _touch(repo, ".projectmem/summary.md", f"# v{i}\n", f"regen {i}", when=when)
+    events = [Event(type="fix", summary=f"regen {i}", git_commit=f"c{i}",
+                    files=[".projectmem/summary.md"]) for i in range(5)]
+
+    assert _analyze_files([".projectmem/summary.md"], events, root=repo) == []
+    # However the path is spelled, including the absolute form the MCP
+    # precheck_file tool accepts.
+    for spelled in ("./.projectmem/summary.md", str(repo / ".projectmem/summary.md"),
+                    ".projectmem\\summary.md"):
+        assert _analyze_files([spelled], events, root=repo) == []
+
+    (repo / ".projectmem" / "summary.md").write_text("# staged\n", encoding="utf-8")
+    _git(repo, "add", ".projectmem/summary.md")
+    monkeypatch.chdir(repo)
+    result = runner.invoke(app, ["precheck"], catch_exceptions=False)
+    assert "HIGH CHURN" not in result.output
+    assert "no warnings" in result.output
 
 
 # ── Auto-captured commit records are facts, not claims ─────────────────────
