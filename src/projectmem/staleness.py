@@ -23,6 +23,7 @@ from projectmem.models import (
     normalize_timestamp,
     superseded_ids,
 )
+from projectmem.storage import MEM_DIR
 
 # A memory is "possibly stale" once its file changed in this many commits
 # after the event was logged. 3 tracks the precheck block threshold — one
@@ -31,7 +32,8 @@ STALE_COMMIT_THRESHOLD = 3
 
 # Event types that assert something durable about a file. Attempts are
 # excluded: a failed attempt is a historical fact, not a claim about the
-# file's current shape — it cannot go stale.
+# file's current shape — it cannot go stale. Auto-captured events are
+# excluded for the same reason (see ``find_stale_events``).
 _STALE_CHECKED_TYPES = ("decision", "fix", "note")
 
 
@@ -43,7 +45,20 @@ def location_file(event: Event) -> str | None:
     # Locations like "class AuthHandler" or "deploy pipeline" aren't paths.
     if not file_part or ("/" not in file_part and "." not in file_part):
         return None
+    # Memory files are not code. summary.md is regenerated on every event, so
+    # any event located there would be flagged within three commits; before
+    # #20 auto-capture located most commits there, and the log is append-only,
+    # so those events are still in users' logs. Judge them never, not forever.
+    if _under_mem_dir(file_part):
+        return None
     return file_part
+
+
+def _under_mem_dir(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized == MEM_DIR or normalized.startswith(f"{MEM_DIR}/")
 
 
 def commits_touching_since(
@@ -151,6 +166,13 @@ def find_stale_events(
     candidates: list[tuple[Event, str]] = []
     for event in events:
         if event.type not in _STALE_CHECKED_TYPES or event.id in retired:
+            continue
+        # An auto-captured "fix"/"decision" is a record of a commit, not a
+        # human's claim about the file — the same reason attempts are
+        # excluded. Three more commits to the file are the file being worked
+        # on, not the commit record going out of date; flagging it only taught
+        # users to ignore the warning.
+        if event.auto_captured:
             continue
         file_path = location_file(event)
         if not file_path:
