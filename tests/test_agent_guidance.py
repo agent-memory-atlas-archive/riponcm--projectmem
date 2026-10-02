@@ -171,6 +171,39 @@ def test_every_call_shown_uses_the_tools_real_arguments(surface, getter):
     assert not wrong, f"{surface} shows calls that fail validation: {wrong}"
 
 
+def _required_params() -> dict[str, set[str]]:
+    """{tool name: the arguments its schema requires}."""
+    import asyncio
+
+    from projectmem import mcp_server
+
+    return {
+        tool.name: set((getattr(tool, "inputSchema", None) or tool.input_schema).get("required", []))
+        for tool in asyncio.run(mcp_server.mcp.list_tools())
+    }
+
+
+@pytest.mark.parametrize("surface,getter", _SURFACES, ids=[s for s, _ in _SURFACES])
+def test_every_call_shown_passes_the_tools_required_arguments(surface, getter):
+    """The other half: `search_events()` named no wrong argument, so the sweep
+    above passed it — but `query` is required and the call fails validation.
+    A literal argument (`precheck_file('index.html')`) fills one positionally."""
+    import re
+
+    text = getter()
+    missing = []
+    for tool, required in _required_params().items():
+        if not required:
+            continue
+        for call in re.finditer(rf"(?<![\w.]){tool}\(([^()]*)\)", text):
+            args = _split_args(call.group(1))
+            named = set(_argument_names_shown(f"{tool}({call.group(1)})", tool))
+            literals = len(args) - len(named)
+            if len(required - named) > literals:
+                missing.append(f"{call.group(0)} — requires {sorted(required)}")
+    assert not missing, f"{surface} shows calls missing a required argument: {missing}"
+
+
 def test_precheck_file_is_shown_on_every_runtime_surface():
     """The sweep above passes vacuously if a surface stops showing the call."""
     for name, getter in _SURFACES[:3]:

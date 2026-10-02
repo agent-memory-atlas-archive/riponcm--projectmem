@@ -176,7 +176,7 @@ def _claude_md_bridge(project_name: str | None = None) -> str:
         "    `supersedes=\"<old event id>\"` to `add_decision`. The log stays\n"
         "    append-only; the old decision is tagged retired and drops out of\n"
         "    summary.md, so the summary never shows two answers to the same\n"
-        "    question. Get ids from `get_summary()` or `search_events()`.\n\n"
+        "    question. Get ids from `get_summary()` or `search_events(query)`.\n\n"
         "Editing `.projectmem/summary.md` or `.projectmem/PROJECT_MAP.md`\n"
         "directly bypasses event logging and breaks audit replay. The\n"
         "summary file regenerates from `events.jsonl` automatically — write\n"

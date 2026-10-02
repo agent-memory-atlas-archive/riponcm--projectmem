@@ -493,7 +493,7 @@ def ai_instructions() -> str:
         "- CLI: `pjm decision \"...\" --supersedes <old event id>`\n\n"
         "The old event stays in `events.jsonl` — history is never rewritten — "
         "but it is tagged retired and drops out of `summary.md`. Event ids come "
-        "from `get_summary()` or `search_events()`.\n\n"
+        "from `get_summary()` or `search_events(query)`.\n\n"
         "Do this whenever you change your mind: swapping a library, reversing "
         "an approach, revising a value you set earlier. Two decisions that "
         "disagree are worse than one decision, because they make the memory "
