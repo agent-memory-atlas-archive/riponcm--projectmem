@@ -135,10 +135,11 @@ def _capture_commit(root: Path) -> None:
         return
 
     changes = _git_last_changes(root)
-    # Memory files last, so the 10-file cap never drops the code (and the
-    # location is always inside `files`).
-    files = sorted((path for _, path in changes), key=is_memory_path)
     location = _pick_location(changes)
+    # The location first, then the rest with memory files last, so the
+    # 10-file cap never drops the code and the location is always in `files`.
+    rest = sorted((p for _, p in changes if p != location), key=is_memory_path)
+    files = ([location] if location else []) + rest
     commit_hash = get_git_commit(root)
 
     # Deduplicate: don't re-log if this commit is already captured
@@ -332,18 +333,31 @@ _TEST_DIRS = frozenset({"tests", "test", "__tests__", "spec"})
 _TEST_NAME = re.compile(r"(^test_.*|.*_test\.[^.]+|.*\.(spec|test)\.[^.]+)$")
 _DOC_SUFFIXES = (".md", ".rst", ".adoc")
 _DOC_DIRS = frozenset({"docs", "doc"})
-_DOC_NAMES = ("readme", "changelog", "notice", "license", "licence", "authors",
-              "contributing", "code_of_conduct")
+# Matched against the whole stem (before the first dot), never as a prefix:
+# `README`, `LICENSE.txt` — but `readme_gen.py` and `NoticeService.java` are code.
+_DOC_STEMS = frozenset({"readme", "changelog", "changes", "notice", "license",
+                        "licence", "copying", "authors", "contributing",
+                        "code_of_conduct", "security"})
+# Build/manifest/CI files, by whole name or anchored pattern. These are the
+# only names that demote a file carrying a code suffix (`setup.py`,
+# `vite.config.ts`): they configure the build rather than being the program.
 _BUILD_NAMES = frozenset({
     "makefile", "cmakelists.txt", "justfile", "package.json", "pyproject.toml",
-    "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "manifest.in", "cargo.toml",
-    "go.mod", "gemfile", "rakefile", "pipfile", "composer.json", "build.gradle",
-    "build.gradle.kts", "settings.gradle", "pom.xml", "mix.exs", "deno.json",
-    "babel.config.js", "webpack.config.js", "procfile", "vagrantfile",
+    "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "manifest.in",
+    "cargo.toml", "go.mod", "gemfile", "rakefile", "pipfile", "composer.json",
+    "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+    "pom.xml", "mix.exs", "deno.json", "procfile", "vagrantfile",
 })
-_BUILD_PREFIXES = ("dockerfile", "docker-compose", "requirements", "tsconfig",
-                   "jsconfig")
-_BUILD_RE = re.compile(r"^[^.]+\.config\.[^.]+$")  # vite.config.ts, jest.config.js
+_BUILD_RE = re.compile(
+    r"^(dockerfile(\..+)?|.+\.dockerfile|docker-compose.*\.ya?ml|requirements.*\.txt"
+    r"|constraints.*\.txt|tsconfig.*\.json|jsconfig.*\.json|.+\.config\.(js|cjs|mjs|ts))$"
+)
+# Binary assets rank with build files: a logo is not what a commit is about.
+_ASSET_SUFFIXES = frozenset(
+    "png jpg jpeg gif webp svg ico bmp tiff psd ttf otf woff woff2 eot "
+    "mp3 wav ogg flac mp4 webm mov avi pdf zip gz tgz tar bz2 xz 7z rar jar "
+    "whl bin dll so dylib exe".split()
+)
 _LOCK_NAMES = frozenset({
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
     "pipfile.lock", "cargo.lock", "gemfile.lock", "composer.lock", "go.sum",
@@ -353,23 +367,22 @@ _LOCK_NAMES = frozenset({
 def _location_rank(path: str) -> int:
     """Lower wins: source, tests, other, docs, build/manifest/CI, lockfiles."""
     parts = path.split("/")
-    name = parts[-1]
-    lower = name.lower()
-    suffix = lower.rsplit(".", 1)[-1] if "." in lower else ""
-    if lower in _LOCK_NAMES or lower.endswith(".lock"):
+    lower = parts[-1].lower()
+    stem, _, rest = lower.partition(".")
+    suffix = rest.rsplit(".", 1)[-1] if rest else ""
+    if lower in _LOCK_NAMES or suffix == "lock":
         return RANK_LOCK
     # Only the top-level directory and the file name count as "dot" config:
     # `.github/`, `.husky/`, `.gitignore`, `.env.example`, `.eslintrc.json`.
     # `src/.well-known/foo.ts` is code.
     if parts[0].startswith(".") or lower.startswith(".") or lower in _BUILD_NAMES \
-            or lower.startswith(_BUILD_PREFIXES) or _BUILD_RE.match(lower):
+            or _BUILD_RE.match(lower) or suffix in _ASSET_SUFFIXES:
         return RANK_BUILD
-    if lower.endswith(_DOC_SUFFIXES) or lower.startswith(_DOC_NAMES):
-        return RANK_DOC
-    if suffix in _CODE_SUFFIXES:  # before the docs dir: `docs/conf.py` is code
+    if suffix in _CODE_SUFFIXES:  # before docs: `docs/conf.py`, `license_check.py`
         in_test_dir = any(p.lower() in _TEST_DIRS for p in parts[:-1])
         return RANK_TEST if in_test_dir or _TEST_NAME.match(lower) else RANK_SOURCE
-    if parts[0].lower() in _DOC_DIRS:
+    if lower.endswith(_DOC_SUFFIXES) or stem in _DOC_STEMS \
+            or parts[0].lower() in _DOC_DIRS:
         return RANK_DOC
     return RANK_OTHER
 

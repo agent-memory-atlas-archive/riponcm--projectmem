@@ -14,6 +14,7 @@ signal of all).
 """
 from __future__ import annotations
 
+import posixpath
 import re
 import subprocess
 from pathlib import Path
@@ -68,21 +69,40 @@ def is_memory_path(path: str, root: Path | None = None) -> bool:
     """True for a path inside the project's own ``.projectmem/``.
 
     One rule for every reader (staleness, precheck, the MCP tool): the path,
-    made project-relative, has ``.projectmem`` as its FIRST component. An
-    absolute path is resolved against ``root`` first. ``sub/.projectmem/x``
-    and ``tests/fixtures/.projectmem/x`` are ordinary files — only the memory
-    directory at the root is projectmem's.
+    made project-relative, has ``.projectmem`` as its FIRST component.
+    ``sub/.projectmem/x`` and ``tests/fixtures/.projectmem/x`` are ordinary
+    files — only the memory directory at the root is projectmem's — and so is
+    anything outside the project.
+
+    A relative path is project-relative (git output, event locations). One
+    that climbs out of the root (``../.projectmem/summary.md``) was typed from
+    a subdirectory — an MCP client's cwd, say — and is anchored there instead.
+    ``src/../.projectmem/summary.md`` and ``./`` fold through ``normpath``.
     """
+    root_posix = (root or Path.cwd()).resolve().as_posix()
     normalized = path.replace("\\", "/")
-    if Path(normalized).is_absolute() or _WINDOWS_DRIVE.match(normalized):
+    if _WINDOWS_DRIVE.match(normalized) and not _WINDOWS_DRIVE.match(root_posix):
+        # A Windows path handed to a POSIX server cannot be anchored to the
+        # root at all. "Safe to modify" is the costly mistake, so err towards
+        # "ours" when the path names a `.projectmem` directory anywhere.
+        return MEM_DIR in normalized.split("/")
+    is_abs = posixpath.isabs(normalized) or bool(_WINDOWS_DRIVE.match(normalized))
+    bases = [None] if is_abs else [root_posix, _cwd_posix()]
+    for base in bases:
+        candidate = normalized if base is None else posixpath.join(base, normalized)
         try:
-            normalized = Path(normalized).resolve().relative_to(
-                (root or Path.cwd()).resolve()
-            ).as_posix()
+            rel = Path(posixpath.normpath(candidate)).relative_to(root_posix)
         except ValueError:
-            return False  # outside the project: not ours
-    parts = [p for p in normalized.split("/") if p and p != "."]
-    return bool(parts) and parts[0] == MEM_DIR
+            continue  # outside the project from this anchor
+        return bool(rel.parts) and rel.parts[0] == MEM_DIR
+    return False
+
+
+def _cwd_posix() -> str:
+    try:
+        return Path.cwd().resolve().as_posix()
+    except OSError:  # cwd deleted under us
+        return "/"
 
 
 def commits_touching_since(

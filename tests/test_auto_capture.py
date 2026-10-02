@@ -262,3 +262,63 @@ def test_memory_files_come_last_so_the_cap_keeps_the_code(tmp_path):
     assert event.location == "src/app.py"
     assert event.files[0] == "src/app.py"
     assert len(event.files) == 10
+
+
+def test_the_location_is_always_first_in_files(tmp_path):
+    """Fourteen docs ahead of `z/code.py` in git order: memory-last sorting
+    alone still capped `files` to the docs and left the location out."""
+    root = _repo(tmp_path)
+    files = {f"a{i:02d}.md": "x\n" for i in range(14)}
+    files["z/code.py"] = "x\n"
+    _commit(root, "fix: docs and the code", files)
+
+    event = _last_event(root)
+
+    assert event.location == "z/code.py"
+    assert event.files[0] == "z/code.py"
+    assert len(event.files) == 10
+
+
+# ── Names are matched whole, never as prefixes ──────────────────────────────
+
+def test_a_code_file_whose_name_starts_like_a_doc_or_manifest_is_code(tmp_path):
+    """`readme`, `requirements`, `tsconfig` were prefix matches, so
+    `src/requirements_checker.py` lost to `README.md` and `tsconfig_utils.ts`
+    to `package.json`."""
+    root = _repo(tmp_path)
+    for code, other in (
+        ("src/requirements_checker.py", "README.md"),
+        ("src/tsconfig_utils.ts", "package.json"),
+        ("src/NoticeService.java", "CHANGELOG.md"),
+        ("src/license_check.py", "docs/guide.md"),
+        ("src/readme_gen.py", "LICENSE"),
+        ("src/dockerfile_parser.py", "Dockerfile"),
+    ):
+        _commit(root, f"fix: {code}", {code: "x\n", other: "# x\n"})
+        assert _last_event(root).location == code, code
+
+
+def test_explicit_build_code_files_are_still_demoted(tmp_path):
+    root = _repo(tmp_path)
+    _commit(root, "fix: packaging and app", {
+        "setup.py": "x\n",
+        "src/app.py": "x\n",
+        "vite.config.ts": "x\n",
+        "conftest.py": "x\n",
+    })
+    assert _last_event(root).location == "src/app.py"
+
+    _commit(root, "fix: docs and a bundler config", {
+        "README.md": "# r\n",
+        "webpack.config.js": "x\n",
+    })
+    assert _last_event(root).location == "README.md"
+
+
+def test_binary_assets_do_not_beat_docs(tmp_path):
+    root = _repo(tmp_path)
+    _commit(root, "fix: logo and readme", {
+        "README.md": "# r\n",
+        "assets/logo.png": "\x89PNG\n",
+    })
+    assert _last_event(root).location == "README.md"

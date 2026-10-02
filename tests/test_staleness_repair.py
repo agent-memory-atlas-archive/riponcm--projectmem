@@ -199,6 +199,29 @@ def test_memory_path_rule_is_anchored_at_the_project_root(tmp_path):
     assert not any(is_memory_path(p, root) for p in not_ours), not_ours
 
 
+def test_memory_path_rule_folds_dot_dot_and_anchors_a_subdir_cwd(tmp_path, monkeypatch):
+    root = tmp_path / "proj"
+    (root / ".projectmem").mkdir(parents=True)
+    (root / "src").mkdir()
+
+    # `..` inside the project folds back onto the root.
+    assert is_memory_path("src/../.projectmem/summary.md", root)
+    assert not is_memory_path("src/../../.projectmem/summary.md", root)
+    assert not is_memory_path(str(tmp_path / "proj" / ".." / "other" / ".projectmem" / "x"), root)
+
+    # A relative path that climbs out of the root was typed from a
+    # subdirectory — an MCP client's cwd. From the root itself it is outside.
+    monkeypatch.chdir(root / "src")
+    assert is_memory_path("../.projectmem/summary.md", root)
+    monkeypatch.chdir(root)
+    assert not is_memory_path("../.projectmem/summary.md", root)
+
+    # A Windows path cannot be anchored on a POSIX server; "safe to modify"
+    # is the costly mistake, so a `.projectmem` directory anywhere counts.
+    assert is_memory_path("C:\\x\\.projectmem\\summary.md", root)
+    assert not is_memory_path("C:\\x\\src\\app.py", root)
+
+
 def test_precheck_and_staleness_agree_on_a_nested_projectmem_dir(repo):
     """A fixture directory named `.projectmem` is an ordinary file to both."""
     nested = "tests/fixtures/.projectmem/events.jsonl"
