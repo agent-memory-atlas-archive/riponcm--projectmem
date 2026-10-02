@@ -334,7 +334,16 @@ def precheck_file(
 
     Read-only; does not modify memory."""
     from projectmem.commands.precheck import _analyze_files
+    from projectmem.staleness import is_memory_path
     root = _root_for(project)
+    # "No warnings. Safe to modify." would contradict the instructions above:
+    # memory files are written by projectmem, never edited by hand.
+    if is_memory_path(file_path, root):
+        return (
+            f"{file_path}: this is a projectmem memory file. It is regenerated "
+            "from the event log, so do not edit it; record the change with "
+            "add_note / add_decision / log_issue / record_fix instead."
+        )
     events = read_events(root)
     warnings = _analyze_files([file_path], events, root=root)
     if not warnings:

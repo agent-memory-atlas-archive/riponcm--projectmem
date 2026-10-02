@@ -210,6 +210,24 @@ def test_mcp_stdio_precheck_file_returns_with_git_backed_analysis(
     assert "README.md" in _tool_text(response)
 
 
+def test_mcp_precheck_file_names_a_memory_file_instead_of_clearing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"no warnings. Safe to modify." on `.projectmem/summary.md` contradicted
+    the instructions the same server hands out: memory files are regenerated
+    from the log and are never edited by hand."""
+    project = _make_git_project(tmp_path, monkeypatch)
+
+    response = _call_mcp_tool(
+        project, tmp_path, "precheck_file", {"file_path": ".projectmem/summary.md"},
+    )
+
+    assert response["result"]["isError"] is False
+    text = _tool_text(response)
+    assert "Safe to modify" not in text
+    assert "memory file" in text and "add_note" in text
+
+
 def test_mcp_stdio_add_note_returns_and_writes_event(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
