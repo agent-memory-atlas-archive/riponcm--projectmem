@@ -4,6 +4,7 @@ from pathlib import Path
 
 import typer
 
+from projectmem.commands.fix import _issue_exists, _normalize_issue_id
 from projectmem.models import Event
 from projectmem.storage import (
     ProjectMemError,
@@ -56,9 +57,20 @@ def run(
 
     issue_id: str | None = None
     if issue:
-        issue_id = issue.lstrip("#")
+        # Same rules as `pjm fix --issue`: `1` means `0001`, and an id with no
+        # issue behind it is refused. Appending an attempt to a typo used to
+        # leave an orphan group that crashed every later summary rebuild.
+        issue_id = _normalize_issue_id(issue)
+        if issue_id is None or not _issue_exists(events, issue_id):
+            raise ProjectMemError(
+                f"Issue #{issue_id or issue} was not found. "
+                "Run `pjm search <query>` or `pjm brief` to find the issue ID."
+            )
     else:
-        issue_id = read_current_issue(root) or latest_open_issue_within(
+        marker = read_current_issue(root)
+        if marker and not _issue_exists(events, marker):
+            marker = None  # stale marker: fall through to the normal resolution
+        issue_id = marker or latest_open_issue_within(
             events, minutes=AUTO_ATTACH_WINDOW_MINUTES
         )
 
