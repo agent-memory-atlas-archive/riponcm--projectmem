@@ -98,6 +98,9 @@ brand/CHANGELOG.md
 # arXiv paper draft, LaTeX sources, and figures — kept off GitHub.
 arxiv/
 /arxiv/
+# Paper evaluation artifacts (benchmarks, self-study data, acceptance notes).
+paper/
+/paper/
 # Poster + research dossier folder (note: the directory name has a
 # trailing space). Cover both spellings to be safe.
 poster resource/
