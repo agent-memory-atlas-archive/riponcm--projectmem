@@ -23,15 +23,46 @@ _PLACEHOLDER_PHRASES = (
 
 
 # How much of each growing section summary.md shows (#19). Notes keep their
-# latest-10 window; open issues are never capped.
+# latest-10 window. Open issues are never dropped: past OPEN_IN_FULL they are
+# still listed, by id only, so a neglected backlog cannot regrow the summary.
 RECENT_FIXED_ISSUES = 10
 RECENT_DECISIONS = 15
+OPEN_IN_FULL = 20
 
 
 def _issue_sort_key(item: tuple[str, list[Event]]) -> tuple[int, str]:
     """Order issue ids numerically: as strings, "10000" sorts before "9999"."""
     issue_id = item[0]
     return (int(issue_id) if issue_id.isdecimal() else -1, issue_id)
+
+
+def _issue_lines(
+    issue_id: str, issue: Event, issue_events: list[Event], fix: Event | None
+) -> list[str]:
+    """One issue's summary entry: the issue, its fix, and recent lessons."""
+    status = "fixed" if fix else "open"
+    marker = "DONE" if fix else "OPEN"
+    issue_loc = f" [{issue.location}]" if issue.location else ""
+    if fix:
+        fix_loc = f" [{fix.location}]" if fix.location else ""
+        outcome = f" -> {fix.summary}{fix_loc}"
+    else:
+        outcome = ""
+    lines = [f"- [{marker}] #{issue_id} {issue.summary}{issue_loc}{outcome} ({status})"]
+    # Surface non-worked attempts. Both `failed` and `partial` outcomes
+    # encode lessons the next session needs — dropping `partial` (L-027b)
+    # would let an AI repeat work that already got 80% of the way there.
+    lessons = [
+        event
+        for event in issue_events
+        if event.type == "attempt" and event.outcome in ("failed", "partial")
+    ]
+    label = {"failed": "Failed attempt", "partial": "Partial attempt"}
+    for lesson_event in lessons[-3:]:
+        loc = f" [{lesson_event.location}]" if lesson_event.location else ""
+        tag = label.get(lesson_event.outcome or "failed", "Attempt")
+        lines.append(f"  - {tag}: {lesson_event.summary}{loc}")
+    return lines
 
 
 def _fix_for(issue_events: list[Event]) -> Event | None:
@@ -138,36 +169,25 @@ def build_summary(
         lines.append("- No issues logged yet.")
     else:
         # A scannable snapshot, not the whole backlog (#19). Every OPEN issue
-        # stays — it is the one thing the next session must not miss — and
-        # only fixed issues are capped. Older ones stay in `pjm search`,
+        # stays — it is the one thing the next session must not miss. The
+        # newest OPEN_IN_FULL are written out with their failed attempts; the
+        # rest are named by id on one line (real projects reach 30–40 open
+        # issues, and each full entry carries up to three attempt lines).
+        # Fixed issues are capped. Everything stays in `pjm search`,
         # `get_issue(issue_id)` and `.projectmem/issues/`.
         open_groups = [g for g in groups if g[3] is None]
         fixed_groups = [g for g in groups if g[3] is not None]
-        for issue_id, issue, issue_events, fix in open_groups + fixed_groups[:RECENT_FIXED_ISSUES]:
-            status = "fixed" if fix else "open"
-            marker = "DONE" if fix else "OPEN"
-
-            issue_loc = f" [{issue.location}]" if issue.location else ""
-            if fix:
-                fix_loc = f" [{fix.location}]" if fix.location else ""
-                outcome = f" -> {fix.summary}{fix_loc}"
-            else:
-                outcome = ""
-
-            lines.append(f"- [{marker}] #{issue_id} {issue.summary}{issue_loc}{outcome} ({status})")
-            # Surface non-worked attempts. Both `failed` and `partial` outcomes
-            # encode lessons the next session needs — dropping `partial` (L-027b)
-            # would let an AI repeat work that already got 80% of the way there.
-            lessons = [
-                event
-                for event in issue_events
-                if event.type == "attempt" and event.outcome in ("failed", "partial")
-            ]
-            label = {"failed": "Failed attempt", "partial": "Partial attempt"}
-            for lesson_event in lessons[-3:]:
-                loc = f" [{lesson_event.location}]" if lesson_event.location else ""
-                tag = label.get(lesson_event.outcome or "failed", "Attempt")
-                lines.append(f"  - {tag}: {lesson_event.summary}{loc}")
+        for group in open_groups[:OPEN_IN_FULL]:
+            lines.extend(_issue_lines(*group))
+        more_open = open_groups[OPEN_IN_FULL:]
+        if more_open:
+            ids = ", ".join(f"#{g[0]}" for g in more_open)
+            lines.append(
+                f"- [OPEN] {len(more_open)} older open issue{'s' if len(more_open) != 1 else ''}, "
+                f"by id: {ids} (`get_issue(issue_id)` for details)"
+            )
+        for group in fixed_groups[:RECENT_FIXED_ISSUES]:
+            lines.extend(_issue_lines(*group))
         hidden = len(fixed_groups) - RECENT_FIXED_ISSUES
         if hidden > 0:
             lines.append(

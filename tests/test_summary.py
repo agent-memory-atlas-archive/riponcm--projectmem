@@ -189,6 +189,23 @@ def test_many_open_issues_are_all_listed(tmp_path):
     assert len(lines) == 15
 
 
+def test_a_large_open_backlog_is_named_not_dropped(tmp_path):
+    """Real projects reach 30–40 open issues. Past 20 they are listed by id
+    on one line: still visible, but they cannot regrow the summary."""
+    from projectmem.summary import build_summary
+
+    summary = build_summary(_issue_events(41), tmp_path)
+    lines = _recent_issue_lines(summary)
+
+    full = [line for line in lines if " older open issue" not in line]
+    assert len(full) == 20
+    assert "#0041" in full[0] and "#0022" in full[-1]
+    overflow = next(line for line in lines if " older open issue" in line)
+    assert overflow.startswith("- [OPEN] 21 older open issues, by id: #0021, #0020")
+    for i in range(1, 42):
+        assert f"#{i:04d}" in summary
+
+
 def test_issue_ids_past_9999_order_numerically(tmp_path):
     """As strings "10000" < "9999", so the cap would have kept the old ids
     and dropped the newest ones."""
