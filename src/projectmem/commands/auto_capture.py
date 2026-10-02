@@ -133,11 +133,9 @@ def _capture_commit(root: Path) -> None:
     if not msg:
         return
 
-    files = _git_last_changed_files(root)
-    # The location is the code this commit is about. Memory files are skipped:
-    # summary.md is regenerated on every event, so it is in most commits, and
-    # `.projectmem/` sorts ahead of most paths — `files[0]` was usually it (#20).
-    code_files = [f for f in files if not f.startswith(f"{MEM_DIR}/")]
+    changes = _git_last_changes(root)
+    files = [path for _, path in changes]
+    location = _pick_location(changes)
     commit_hash = get_git_commit(root)
 
     # Deduplicate: don't re-log if this commit is already captured
@@ -170,7 +168,7 @@ def _capture_commit(root: Path) -> None:
         outcome=matched["outcome"],
         files=files[:10],  # Cap at 10 files
         git_commit=commit_hash,
-        location=code_files[0] if code_files else None,
+        location=location,
         auto_captured=True,
         capture_source=matched["capture_source"],
         capture_confidence=matched["confidence"],
@@ -260,18 +258,83 @@ def _git_last_message(root: Path) -> str | None:
         return None
 
 
-def _git_last_changed_files(root: Path) -> list[str]:
-    """Get files changed in the most recent commit."""
+def _git_last_changes(root: Path) -> list[tuple[str, str]]:
+    """``(status, path)`` for every file the most recent commit touched.
+
+    ``status`` is git's one-letter kind — A(dded), M(odified), D(eleted),
+    R(enamed), C(opied), T(ype changed) — with the similarity score dropped.
+    For a rename or copy ``path`` is the NEW path: the old one no longer
+    exists, so an event located there would be flagged "no longer exists"
+    forever and ``pjm precheck`` on the surviving file would show nothing.
+
+    ``--root`` makes the repo's first commit list its files instead of nothing;
+    ``-z`` keeps a non-ASCII path as bytes instead of a C-quoted
+    ``"src/caf\\303\\251.py"`` that matches no file on disk.
+    """
     try:
         result = subprocess.run(
-            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+            ["git", "diff-tree", "--root", "-r", "-M", "-z", "--no-commit-id",
+             "--name-status", "HEAD"],
             cwd=root,
             check=True,
             capture_output=True,
-            text=True,
             timeout=5,
         )
-        files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
-        return files
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return []
+    # Not `text=True`: a hook runs under whatever locale git gave it, often C,
+    # and a non-UTF-8 default encoding would turn café into a crash.
+    fields = result.stdout.decode("utf-8", errors="replace").split("\0")
+    changes: list[tuple[str, str]] = []
+    i = 0
+    while i + 1 < len(fields) and fields[i]:
+        status, path = fields[i][0], fields[i + 1]
+        i += 2
+        if status in ("R", "C"):  # one extra field: old path, then new path
+            if i >= len(fields):
+                break
+            path = fields[i]
+            i += 1
+        changes.append((status, path))
+    return changes
+
+
+# Paths that describe or build the code rather than being it. A commit that
+# touches both `README.md` and `src/app.py` is about `src/app.py`; before this
+# ranking git's path order put the uppercase root file first.
+_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
+_DOC_DIRS = ("docs/", "doc/")
+_LOCK_NAMES = (
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
+    "Pipfile.lock", "Cargo.lock", "Gemfile.lock", "composer.lock", "go.sum",
+)
+
+
+def _location_rank(path: str) -> int:
+    """0 for code, 1 for docs, 2 for CI/config/lockfiles. Lower wins."""
+    name = path.rsplit("/", 1)[-1]
+    if name in _LOCK_NAMES or name.endswith(".lock"):
+        return 2
+    if any(part.startswith(".") for part in path.split("/")):
+        return 2  # `.github/ci.yml`, `.gitignore`, `.env.example` ...
+    if path.lower().startswith(_DOC_DIRS) or name.lower().endswith(_DOC_SUFFIXES):
+        return 1
+    return 0
+
+
+def _pick_location(changes: list[tuple[str, str]]) -> str | None:
+    """The one file this commit is about, or None.
+
+    Candidates are the paths that still exist after the commit — a deleted
+    file would be flagged "no longer exists" on every later precheck — minus
+    memory files: summary.md is regenerated on every event, so it is in most
+    commits, and `.projectmem/` sorts ahead of most paths (#20). Among those,
+    code beats docs beats CI/config/lockfiles; a tie keeps git's order.
+    """
+    live = [
+        path for status, path in changes
+        if status != "D" and not path.startswith(f"{MEM_DIR}/")
+    ]
+    if not live:
+        return None
+    return min(live, key=_location_rank)  # min() is stable: first of a tie wins
