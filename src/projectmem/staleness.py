@@ -17,7 +17,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from projectmem.models import Event, location_to_file, superseded_ids
+from projectmem.models import (
+    Event,
+    location_to_file,
+    normalize_timestamp,
+    superseded_ids,
+)
 
 # A memory is "possibly stale" once its file changed in this many commits
 # after the event was logged. 3 tracks the precheck block threshold — one
@@ -56,13 +61,27 @@ def commits_touching_since(
     times = commit_times(file_path, root)
     if times is None:
         return None
-    return sum(1 for t in times if t > since_iso)
+    since = _zulu(since_iso)
+    return sum(1 for t in times if t > since)
+
+
+def _zulu(ts: str | None) -> str:
+    """Canonical UTC form of an event timestamp; "" (no timestamp) stays ""."""
+    return normalize_timestamp(ts) if ts else ""
 
 
 def commit_times(
     file_path: str, root: Path | None = None, since_iso: str | None = None
 ) -> list[str] | None:
-    """Every commit time that touched `file_path`, newest first.
+    """Every commit time that touched `file_path`, newest first, as UTC Zulu.
+
+    Times are returned in the same canonical form events are stored in
+    (``2026-10-02T18:41:22Z``), so callers may compare them as strings. Git's
+    ``%cI`` carries the committer's own offset (``12:41:32-06:00``), and a
+    string comparison between that and a Zulu event timestamp is a comparison
+    of wall-clock digits in two different zones: the same five events and the
+    same history were flagged 0, 2 or 5 times depending on the machine's TZ
+    (0.3.3 regression).
 
     One ``git log`` answers any number of "how many commits since T?"
     questions by counting in memory, because the answer for a later T is
@@ -97,7 +116,11 @@ def commit_times(
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [
+        normalize_timestamp(line.strip())
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
 
 
 def find_stale_events(
@@ -140,7 +163,7 @@ def find_stale_events(
     # that cites it — commits before that cannot affect any count.
     oldest: dict[str, str] = {}
     for event, file_path in candidates:
-        ts = event.timestamp or ""
+        ts = _zulu(event.timestamp)
         if file_path not in oldest or ts < oldest[file_path]:
             oldest[file_path] = ts
 
@@ -164,7 +187,10 @@ def find_stale_events(
         times = history.get(file_path)
         if times is None:
             continue  # git could not answer; "cannot judge" is not "stale"
-        count = sum(1 for t in times if t > event.timestamp)
+        # Both sides are canonical Zulu (see ``commit_times``), so the string
+        # order is the time order.
+        logged = _zulu(event.timestamp)
+        count = sum(1 for t in times if t > logged)
         if count >= threshold:
             flagged.append({"event": event, "file": file_path, "commits_since": count})
     return flagged
