@@ -16,6 +16,8 @@ deliberately about content, not formatting.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from projectmem.commands.init import _claude_md_bridge
@@ -71,30 +73,124 @@ def test_supersedes_is_documented_on_every_surface(surface, getter):
     assert "supersede" in text, f"{surface} never mentions supersedes"
 
 
-# ── #18: the guidance must name precheck_file's real argument ───────────────
+# ── #18: every call shape we show must use the tool's real arguments ────────
+#
+# 0.3.2 told agents to call precheck_file(path); the parameter is file_path, so
+# every call failed validation — the guidance was fixed by hand (#22) and the
+# README still said get_issue(id) where the parameter is issue_id. Agents copy
+# the call shape they are shown, so a wrong name is a failed call every time.
+# Rather than pin one tool at a time, read every tool's real signature off the
+# server and check every call written on every surface that teaches one.
 
-@pytest.mark.parametrize("surface,getter", [
-    ("AI_INSTRUCTIONS.md (get_instructions)", ai_instructions),
-    ("CLAUDE.md bridge", lambda: _claude_md_bridge("demo")),
-    ("MCP instructions= field", _mcp_instructions),
-])
-def test_precheck_file_is_called_with_its_real_argument_name(surface, getter):
-    """The guidance said precheck_file(path); the parameter is file_path.
+_REPO = Path(__file__).resolve().parents[1]
 
-    Agents copy the call shape they are shown, so every call then failed
-    validation. Read the name off the tool itself so the two cannot drift.
-    """
+
+def _tool_params() -> dict[str, list[str]]:
+    """{tool name: its real parameter names}, from what the server registers."""
+    import asyncio
     import inspect
-    import re
 
     from projectmem import mcp_server
 
-    param = next(iter(inspect.signature(mcp_server.precheck_file).parameters))
-    calls = re.findall(r"precheck_file\((\w+)", getter())
-    assert calls, f"{surface} never shows how to call precheck_file"
-    assert set(calls) == {param}, (
-        f"{surface} calls precheck_file({calls[0]}), but the argument is {param}"
+    params = {}
+    for tool in asyncio.run(mcp_server.mcp.list_tools()):
+        fn = getattr(mcp_server, tool.name)
+        fn = getattr(fn, "fn", fn)  # some SDK versions wrap the callable
+        params[tool.name] = list(inspect.signature(fn).parameters)
+    return params
+
+
+def _split_args(arglist: str) -> list[str]:
+    """Split a call's argument text on top-level commas, ignoring quoted ones."""
+    args, depth, quote, cur = [], 0, None, []
+    for ch in arglist:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    args.append("".join(cur))
+    return [a.strip() for a in args if a.strip()]
+
+
+def _argument_names_shown(text: str, tool: str) -> list[str]:
+    """Every argument *name* written in a `tool(...)` call in `text`.
+
+    Quoted values and literals are not names: `outcome="failed"` names
+    `outcome`, and `precheck_file('index.html')` names nothing. A bare
+    identifier (`precheck_file(file_path)`) is a placeholder for an argument,
+    so it has to be one.
+    """
+    import re
+
+    names = []
+    for call in re.finditer(rf"(?<![\w.]){tool}\(([^()]*)\)", text):
+        for arg in _split_args(call.group(1)):
+            keyword = re.match(r"(\w+)\s*=(?!=)", arg)
+            if keyword:
+                names.append(keyword.group(1))
+            elif re.fullmatch(r"[A-Za-z_]\w*", arg) and arg not in {"None", "True", "False"}:
+                names.append(arg)
+    return names
+
+
+def _doc_files() -> list[Path]:
+    found = [_REPO / "README.md", _REPO / "TUTORIAL.md", _REPO / "llms.txt"]
+    found += sorted((_REPO / "docs").glob("**/*.md"))
+    return [f for f in found if f.exists()]
+
+
+_SURFACES = [
+    ("AI_INSTRUCTIONS.md (get_instructions)", ai_instructions),
+    ("CLAUDE.md bridge", lambda: _claude_md_bridge("demo")),
+    ("MCP instructions= field", _mcp_instructions),
+] + [
+    (f.name if f.parent == _REPO else f"docs/{f.name}",
+     lambda f=f: f.read_text(encoding="utf-8"))
+    for f in _doc_files()
+]
+
+
+@pytest.mark.parametrize("surface,getter", _SURFACES, ids=[s for s, _ in _SURFACES])
+def test_every_call_shown_uses_the_tools_real_arguments(surface, getter):
+    """No surface may show a tool being called with an argument it does not have."""
+    text = getter()
+    wrong = []
+    for tool, params in _tool_params().items():
+        for name in _argument_names_shown(text, tool):
+            if name not in params:
+                wrong.append(f"{tool}({name}) — real arguments: {params or 'none'}")
+    assert not wrong, f"{surface} shows calls that fail validation: {wrong}"
+
+
+def test_precheck_file_is_shown_on_every_runtime_surface():
+    """The sweep above passes vacuously if a surface stops showing the call."""
+    for name, getter in _SURFACES[:3]:
+        assert _argument_names_shown(getter(), "precheck_file"), (
+            f"{name} never shows how to call precheck_file"
+        )
+
+
+def test_the_call_scanner_reads_names_not_values():
+    shown = _argument_names_shown(
+        'record_attempt(summary, outcome="failed") then record_fix(summary, '
+        'issue_id="<issue_id>") and precheck_file(\'index.html\') '
+        'and get_issue(id) and search_events(query="a, b=c")',
+        "record_attempt",
     )
+    assert shown == ["summary", "outcome"]
+    assert _argument_names_shown("precheck_file('index.html')", "precheck_file") == []
+    assert _argument_names_shown("get_issue(id)", "get_issue") == ["id"]
+    assert _argument_names_shown('search_events(query="a, b=c")', "search_events") == ["query"]
+    assert _argument_names_shown("get_summary()", "get_summary") == []
 
 
 def test_supersedes_guidance_says_what_it_does_to_the_summary():
