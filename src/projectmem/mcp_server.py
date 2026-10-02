@@ -187,9 +187,10 @@ mcp = FastMCP(
     instructions=(
         "You are connected to projectmem — a mandatory project memory + "
         "judgment layer. The tools below are FAR cheaper than re-deriving "
-        "the same information from source: a get_summary call costs ~500 "
-        "tokens; re-scanning the project to answer the same question "
-        "costs ~5,000.\n"
+        "the same information from source: get_summary returns a bounded "
+        "snapshot, typically a few hundred to ~1,500 tokens; re-scanning the "
+        "project to answer the same question usually costs several times "
+        "that.\n"
         "\n"
         "SESSION START — call these three tools, in this order, BEFORE\n"
         "answering ANY question about this project:\n"
@@ -266,7 +267,8 @@ def get_summary(project: ProjectArg = None) -> str:
     Do NOT answer from conversation history alone.
     Do NOT re-scan source files (package.json, README, src/) to understand
     the project — `summary.md` is the distilled authoritative source and
-    costs ~500 tokens versus ~5,000 to re-derive.
+    stays bounded as the project ages (typically a few hundred to ~1,500
+    tokens), far less than re-deriving it.
 
     Your prior assumptions about this project may be stale. Call this
     cheaply at session start (and again before ending) to verify your

@@ -126,8 +126,10 @@ def initialize(root: Path | None = None) -> Path:
 
     config = project_dir / CONFIG_FILE
     if not config.exists():
+        # No `summary_size_limit_kb`: nothing ever read it, so it promised a
+        # cap that did not exist. summary.md is bounded in summary.py (#19).
         config.write_text(
-            'summary_size_limit_kb = 20\nrecent_days = 30\nproject_description = ""\n',
+            'recent_days = 30\nproject_description = ""\n',
             encoding="utf-8",
         )
 
@@ -410,9 +412,10 @@ def ai_instructions() -> str:
         "plans down to Shipped) — exactly like you edit `PROJECT_MAP.md`. NEVER log a "
         "plan/idea as an event, and never add a new event type for it; the vocabulary "
         "stays the six typed events.\n\n"
-        "Prefer the MCP tools when available — they're cheaper (~500 tokens) than "
-        "reading files individually and they auto-resolve the project root regardless "
-        "of your working directory.\n\n"
+        "Prefer the MCP tools when available — they're cheaper than reading files "
+        "individually (the summary is a bounded snapshot, typically a few hundred to "
+        "~1,500 tokens) and they auto-resolve the project root regardless of your "
+        "working directory.\n\n"
         "**Step 3 — Check `.projectmem/issues/` only when a logged issue looks "
         "relevant to the current task** (use `get_issue(issue_id)` via MCP, or read "
         "the file). Don't read every issue on every session — that's wasteful.\n\n"
