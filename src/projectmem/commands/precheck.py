@@ -28,6 +28,7 @@ import typer
 
 from projectmem.glyphs import RULE
 from projectmem.models import Event, location_to_file, superseded_ids
+from projectmem.staleness import is_memory_path
 from projectmem.storage import MEM_DIR, read_events, require_mem_dir
 
 
@@ -255,7 +256,7 @@ def _analyze_files(
     # own doing: checking it reported "HIGH CHURN: 7 changes in last 30 days /
     # May indicate unresolved architectural issue" about the memory layer.
     # Filtered here, not in the callers, so the MCP precheck_file path is covered.
-    files = [f for f in files if not _is_memory_file(f)]
+    files = [f for f in files if not is_memory_path(f, root)]
     if not files:
         return warnings
 
@@ -416,17 +417,6 @@ def _analyze_files(
             })
 
     return warnings
-
-
-def _is_memory_file(file_path: str) -> bool:
-    """True for any path inside ``.projectmem/``, however it was spelled.
-
-    Accepts the forms precheck is handed: ``git diff --name-only`` output,
-    ``./``-prefixed and Windows-separated paths from ``--files``, and the
-    absolute paths the MCP tool allows.
-    """
-    parts = Path(file_path.replace("\\", "/")).parts
-    return MEM_DIR in parts
 
 
 def _events_for_file(file_path: str, events: list[Event]) -> list[Event]:

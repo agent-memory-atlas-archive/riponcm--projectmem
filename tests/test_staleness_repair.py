@@ -29,6 +29,7 @@ from projectmem.staleness import (
     commit_times,
     commits_touching_since,
     find_stale_events,
+    is_memory_path,
     location_file,
 )
 from projectmem.storage import initialize
@@ -164,12 +165,50 @@ def worked_on_repo(repo: Path) -> Path:
     return repo
 
 
-def test_an_auto_captured_fix_is_not_flagged_as_stale(worked_on_repo):
-    captured = _event("auto", "2026-02-01T10:00:00Z", "src/f.py", etype="fix",
+@pytest.mark.parametrize("etype", ["fix", "note"])
+def test_an_auto_captured_fix_or_note_is_not_flagged_as_stale(worked_on_repo, etype):
+    captured = _event("auto", "2026-02-01T10:00:00Z", "src/f.py", etype=etype,
                       auto_captured=True, capture_source="git_post_commit",
                       git_commit="abc1234")
 
     assert find_stale_events([captured], worked_on_repo) == []
+
+
+def test_an_auto_captured_decision_is_still_a_claim_and_is_flagged(worked_on_repo):
+    """"Breaking change:" / "Refactor:" assert the file's shape; three more
+    commits can make that wrong exactly like a hand-written decision."""
+    captured = _event("auto", "2026-02-01T10:00:00Z", "src/f.py", etype="decision",
+                      auto_captured=True, capture_source="git_post_commit",
+                      git_commit="abc1234")
+
+    flagged = find_stale_events([captured], worked_on_repo)
+    assert [(x["event"].id, x["commits_since"]) for x in flagged] == [("auto", 3)]
+
+
+# ── One root-anchored rule for "is this a memory file" ──────────────────────
+
+def test_memory_path_rule_is_anchored_at_the_project_root(tmp_path):
+    root = tmp_path / "proj"
+    (root / ".projectmem").mkdir(parents=True)
+    ours = [".projectmem/summary.md", "./.projectmem/summary.md",
+            ".projectmem\\issues\\0001.md", str(root / ".projectmem" / "summary.md")]
+    not_ours = ["sub/.projectmem/x.md", "tests/fixtures/.projectmem/events.jsonl",
+                "src/app.py", str(tmp_path / "other" / ".projectmem" / "summary.md")]
+
+    assert all(is_memory_path(p, root) for p in ours), ours
+    assert not any(is_memory_path(p, root) for p in not_ours), not_ours
+
+
+def test_precheck_and_staleness_agree_on_a_nested_projectmem_dir(repo):
+    """A fixture directory named `.projectmem` is an ordinary file to both."""
+    nested = "tests/fixtures/.projectmem/events.jsonl"
+    _touch(repo, nested, "{}\n", "add fixture", when="2026-02-01T10:00:00Z")
+    events = [Event(type="attempt", summary="tried hand-editing the fixture",
+                    outcome="failed", location=nested)]
+
+    assert location_file(_event("e", "2026-01-01T10:00:00Z", nested), repo) == nested
+    warnings = _analyze_files([nested], events, root=repo)
+    assert [w["type"] for w in warnings] == ["failed_attempts"]
 
 
 def test_a_manual_decision_in_the_same_spot_is_still_flagged(worked_on_repo):

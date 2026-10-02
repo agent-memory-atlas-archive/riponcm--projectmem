@@ -14,6 +14,7 @@ signal of all).
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -30,14 +31,23 @@ from projectmem.storage import MEM_DIR
 # rewrite is normal drift, three separate changes mean the file moved on.
 STALE_COMMIT_THRESHOLD = 3
 
+# ``Path("C:/x").is_absolute()`` is False on POSIX; an MCP client on Windows
+# can still hand us that spelling.
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:/")
+
 # Event types that assert something durable about a file. Attempts are
 # excluded: a failed attempt is a historical fact, not a claim about the
-# file's current shape — it cannot go stale. Auto-captured events are
-# excluded for the same reason (see ``find_stale_events``).
+# file's current shape — it cannot go stale.
 _STALE_CHECKED_TYPES = ("decision", "fix", "note")
 
+# Auto-captured event types that are likewise records of a commit rather
+# than claims: "Fix: ..." and "New feature: ..." say what a commit did. An
+# auto-captured decision ("Breaking change:", "Refactor:") does assert the
+# file's shape, so it stays checked (see ``find_stale_events``).
+_AUTO_CAPTURED_FACT_TYPES = ("fix", "note")
 
-def location_file(event: Event) -> str | None:
+
+def location_file(event: Event, root: Path | None = None) -> str | None:
     """File part of an event's location (``src/auth.py:42`` -> ``src/auth.py``)."""
     if not event.location:
         return None
@@ -49,16 +59,30 @@ def location_file(event: Event) -> str | None:
     # any event located there would be flagged within three commits; before
     # #20 auto-capture located most commits there, and the log is append-only,
     # so those events are still in users' logs. Judge them never, not forever.
-    if _under_mem_dir(file_part):
+    if is_memory_path(file_part, root):
         return None
     return file_part
 
 
-def _under_mem_dir(path: str) -> bool:
+def is_memory_path(path: str, root: Path | None = None) -> bool:
+    """True for a path inside the project's own ``.projectmem/``.
+
+    One rule for every reader (staleness, precheck, the MCP tool): the path,
+    made project-relative, has ``.projectmem`` as its FIRST component. An
+    absolute path is resolved against ``root`` first. ``sub/.projectmem/x``
+    and ``tests/fixtures/.projectmem/x`` are ordinary files — only the memory
+    directory at the root is projectmem's.
+    """
     normalized = path.replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    return normalized == MEM_DIR or normalized.startswith(f"{MEM_DIR}/")
+    if Path(normalized).is_absolute() or _WINDOWS_DRIVE.match(normalized):
+        try:
+            normalized = Path(normalized).resolve().relative_to(
+                (root or Path.cwd()).resolve()
+            ).as_posix()
+        except ValueError:
+            return False  # outside the project: not ours
+    parts = [p for p in normalized.split("/") if p and p != "."]
+    return bool(parts) and parts[0] == MEM_DIR
 
 
 def commits_touching_since(
@@ -167,14 +191,14 @@ def find_stale_events(
     for event in events:
         if event.type not in _STALE_CHECKED_TYPES or event.id in retired:
             continue
-        # An auto-captured "fix"/"decision" is a record of a commit, not a
-        # human's claim about the file — the same reason attempts are
-        # excluded. Three more commits to the file are the file being worked
-        # on, not the commit record going out of date; flagging it only taught
-        # users to ignore the warning.
-        if event.auto_captured:
+        # An auto-captured fix or note is a record of a commit, not a human's
+        # claim about the file — the same reason attempts are excluded. Three
+        # more commits to the file are the file being worked on, not the
+        # record going out of date; flagging it only taught users to ignore
+        # the warning. An auto-captured decision is a claim, and stays.
+        if event.auto_captured and event.type in _AUTO_CAPTURED_FACT_TYPES:
             continue
-        file_path = location_file(event)
+        file_path = location_file(event, root_path)
         if not file_path:
             continue
         if only_files is not None and file_path not in only_files:
