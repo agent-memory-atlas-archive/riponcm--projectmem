@@ -1,0 +1,49 @@
+cff-version: 1.2.0
+message: >-
+  If you use projectmem in your research or writing, please cite the paper
+  below. To cite a specific release of the software, use the metadata in this
+  file.
+title: "projectmem"
+type: software
+abstract: >-
+  projectmem is coding agent memory: a local-first memory and judgment layer
+  for AI coding agents. It records issues, attempts, fixes, decisions and notes
+  as typed events in plain text, serves them to agents through a native MCP
+  server, and warns at git commit time before an approach that already failed
+  is repeated.
+authors:
+  - family-names: Malo
+    given-names: Ripon Chandra
+    affiliation: University of Utah
+version: 0.3.4
+date-released: 2026-10-02
+license: MIT
+repository-code: "https://github.com/riponcm/projectmem"
+url: "https://projectmem.dev"
+keywords:
+  - coding agent memory
+  - memory for AI coding agents
+  - AI coding agents
+  - model context protocol
+  - local-first
+preferred-citation:
+  type: article
+  title: >-
+    PROJECTMEM: A Local-First, Event-Sourced Memory and Judgment Layer for AI
+    Coding Agents
+  authors:
+    - family-names: Malo
+      given-names: Ripon Chandra
+      affiliation: University of Utah
+    - family-names: Qiu
+      given-names: Tong
+      affiliation: University of Utah
+  year: 2026
+  month: 6
+  journal: arXiv preprint
+  doi: 10.48550/arXiv.2606.12329
+  url: "https://arxiv.org/abs/2606.12329"
+  identifiers:
+    - type: other
+      value: "arXiv:2606.12329"
+      description: arXiv identifier (primary category cs.AI)

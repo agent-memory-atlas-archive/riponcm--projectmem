@@ -863,7 +863,7 @@ projectmem is described in a peer-readable research paper:
 
 > **PROJECTMEM: A Local-First, Event-Sourced Memory and Judgment Layer for AI Coding Agents**
 > Ripon Chandra Malo, Tong Qiu — University of Utah
-> [arXiv:2606.12329](https://arxiv.org/abs/2606.12329) · cs.SE (cross-list cs.AI)
+> [arXiv:2606.12329](https://arxiv.org/abs/2606.12329) · cs.AI
 
 The paper introduces the **Memory-as-Governance** framing — memory that doesn't merely answer the agent but acts on its next action — and reports the design, the deterministic pre-commit judgment gate, a capability comparison against 12 contemporary memory systems, and a two-month, 207-event dogfooding study across 10 real projects.
 
@@ -877,7 +877,7 @@ If projectmem is useful in your research or writing, please cite:
   year          = {2026},
   eprint        = {2606.12329},
   archivePrefix = {arXiv},
-  primaryClass  = {cs.SE},
+  primaryClass  = {cs.AI},
   url           = {https://arxiv.org/abs/2606.12329}
 }
 ```
